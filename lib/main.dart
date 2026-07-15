@@ -832,7 +832,15 @@ class _DetectionTickerState extends State<_DetectionTicker> {
   int _tripCount = 0; // detections shown this trip
   bool _latestRejected = false;
   bool _latestConfirmed = false;
+  String? _correctedTo; // canonical type the driver corrected the alert to
   bool _wasRecording = false;
+
+  /// Impact types the driver can correct an alert between (icon-only buttons).
+  static const List<String> _correctableTypes = [
+    EventTypes.pothole,
+    EventTypes.bump,
+    EventTypes.concreteJoint,
+  ];
 
   Timer? _fadeTimer;
   Timer? _ageTicker; // repaints the "Xs ago" label once a second
@@ -888,6 +896,7 @@ class _DetectionTickerState extends State<_DetectionTicker> {
         _tripCount = 0;
         _latestRejected = false;
         _latestConfirmed = false;
+        _correctedTo = null;
       });
     }
   }
@@ -902,6 +911,7 @@ class _DetectionTickerState extends State<_DetectionTicker> {
       _tripCount++;
       _latestRejected = false;
       _latestConfirmed = false;
+      _correctedTo = null;
     });
     _fadeTimer = Timer(_fadeAfter, () {
       if (mounted) setState(() => _latest = null);
@@ -938,6 +948,25 @@ class _DetectionTickerState extends State<_DetectionTicker> {
     });
   }
 
+  /// Driver corrects the detected type (e.g. pothole → bump). Records a negative
+  /// for the detected type + a positive for [toType] as paired ground truth.
+  void _correctLatest(String toType) {
+    final e = _latest;
+    if (e == null ||
+        _latestConfirmed ||
+        _latestRejected ||
+        _correctedTo != null) {
+      return;
+    }
+    unawaited(widget.recorder
+        .reclassifyDetectorEvent(e.ts, e.type, toType, zScore: e.zScore));
+    setState(() => _correctedTo = toType);
+    _fadeTimer?.cancel();
+    _fadeTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _latest = null);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final e = _latest;
@@ -953,6 +982,23 @@ class _DetectionTickerState extends State<_DetectionTicker> {
         ? '${e.peakG.toStringAsFixed(2)} g'
         : (e.zScore > 0 ? 'z ${e.zScore.toStringAsFixed(1)}' : null);
 
+    final bool resolved =
+        _latestRejected || _latestConfirmed || _correctedTo != null;
+    final String headline = _latestRejected
+        ? '${EventUi.label(type)} — false alarm'
+        : _correctedTo != null
+            ? '${EventUi.label(type)} → ${EventUi.label(_correctedTo!)}'
+            : _latestConfirmed
+                ? '${EventUi.label(type)} — confirmed'
+                : EventUi.label(type);
+    final Color? mutedColor = Theme.of(context)
+        .textTheme
+        .bodySmall
+        ?.color
+        ?.withValues(alpha: 0.7);
+    final bool showCorrections =
+        !resolved && _correctableTypes.contains(type);
+
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
@@ -963,65 +1009,81 @@ class _DetectionTickerState extends State<_DetectionTicker> {
         ),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(EventUi.icon(type), color: accent, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text.rich(
-              TextSpan(
-                style: Theme.of(context).textTheme.bodyMedium,
+          Row(
+            children: [
+              Icon(EventUi.icon(type), color: accent, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text.rich(
+                  TextSpan(
+                    style: Theme.of(context).textTheme.bodyMedium,
+                    children: [
+                      TextSpan(
+                        text: headline,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      if (!resolved && severity != null)
+                        TextSpan(
+                          text: '  $severity',
+                          style: TextStyle(
+                              color: accent,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12),
+                        ),
+                      TextSpan(
+                        text: '  · ${ageSec}s ago  · #$_tripCount this trip',
+                        style: TextStyle(color: mutedColor, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              // Live confirm / false-alarm actions. Hidden once answered.
+              if (!resolved) ...[
+                _AlertActionButton(
+                  icon: Icons.check,
+                  color: Colors.green,
+                  tooltip: 'Confirm — this was a real event',
+                  onTap: _confirmLatest,
+                ),
+                const SizedBox(width: 8),
+                _AlertActionButton(
+                  icon: Icons.close,
+                  color: Colors.red,
+                  tooltip: 'False alarm',
+                  onTap: _rejectLatest,
+                ),
+              ],
+            ],
+          ),
+          // Correction row: tap the icon of what it ACTUALLY was. Icon-only,
+          // large tap targets. Shown only for correctable impact alerts.
+          if (showCorrections)
+            Padding(
+              padding: const EdgeInsets.only(top: 8, left: 28),
+              child: Row(
                 children: [
-                  TextSpan(
-                    text: _latestRejected
-                        ? '${EventUi.label(type)} — marked false alarm'
-                        : _latestConfirmed
-                            ? '${EventUi.label(type)} — confirmed'
-                            : EventUi.label(type),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  if (!_latestRejected && !_latestConfirmed && severity != null)
-                    TextSpan(
-                      text: '  $severity',
-                      style: TextStyle(
-                          color: accent,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12),
+                  Icon(Icons.swap_horiz, size: 20, color: mutedColor),
+                  const SizedBox(width: 10),
+                  for (final t
+                      in _correctableTypes.where((t) => t != type)) ...[
+                    _AlertActionButton(
+                      icon: EventUi.icon(t),
+                      color: EventUi.color(t),
+                      tooltip: 'Correct to ${EventUi.label(t)}',
+                      onTap: () => _correctLatest(t),
                     ),
-                  TextSpan(
-                    text: '  · ${ageSec}s ago  · #$_tripCount this trip',
-                    style: TextStyle(
-                      color: Theme.of(context)
-                          .textTheme
-                          .bodySmall
-                          ?.color
-                          ?.withValues(alpha: 0.7),
-                      fontSize: 11,
-                    ),
-                  ),
+                    const SizedBox(width: 10),
+                  ],
                 ],
               ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
             ),
-          ),
-          // Live confirm / false-alarm actions. Hidden once the driver has
-          // answered (the banner then briefly acknowledges and dismisses).
-          if (!_latestRejected && !_latestConfirmed) ...[
-            _AlertActionButton(
-              icon: Icons.check,
-              color: Colors.green,
-              tooltip: 'Confirm — this was a real event',
-              onTap: _confirmLatest,
-            ),
-            const SizedBox(width: 8),
-            _AlertActionButton(
-              icon: Icons.close,
-              color: Colors.red,
-              tooltip: 'False alarm',
-              onTap: _rejectLatest,
-            ),
-          ],
         ],
       ),
     );
@@ -1047,18 +1109,19 @@ class _AlertActionButton extends StatelessWidget {
     return Tooltip(
       message: tooltip,
       child: InkWell(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(12),
         onTap: onTap,
         child: Container(
-          width: 44,
-          height: 36,
+          // Large tap targets — the driver is glancing, not aiming.
+          width: 56,
+          height: 48,
           alignment: Alignment.center,
           decoration: BoxDecoration(
             color: color.withValues(alpha: 0.10),
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(color: color.withValues(alpha: 0.4)),
           ),
-          child: Icon(icon, size: 20, color: color),
+          child: Icon(icon, size: 26, color: color),
         ),
       ),
     );
