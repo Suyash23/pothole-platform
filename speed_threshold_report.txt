@@ -1,0 +1,47 @@
+========================================================================
+  POTHOLE THRESHOLD CALIBRATION  —  Z-score by speed bucket
+========================================================================
+
+Current fixed threshold: Z ≥ 4.0 for all speeds
+
+Speed bucket                    n    mean     p90     p95     p99     max   rec≥2%FP
+------------------------------------------------------------------------
+  10–20  km/h  (slow city)   2501   -0.64    0.38    0.76    1.38    6.49       1.21
+  20–40  km/h  (city)        5312   -0.17    0.91    1.25    2.38    5.33       1.84
+  40–60  km/h  (arterial)    6137   -0.08    1.00    1.46    2.87    8.12       2.27
+  60–80  km/h  (fast arterial)   5366   -0.13    0.89    1.25    2.38    5.27       1.88
+  80–100 km/h  (freeway entry)   5677   -0.25    0.79    1.22    2.39    4.32       1.92
+  100+   km/h  (freeway)    13829   -0.11    0.98    1.37    2.28    6.04       1.85
+
+  'rec≥2%FP' = threshold where only 2% of samples in that speed bucket
+  would exceed it under normal road conditions (P98 of the distribution).
+
+── KNOWN-EVENT Z-SCORES (isBraking / isBump / userLabel) ────────────
+Speed bucket                    n    mean     p50     p10     min
+------------------------------------------------------------------------
+  10–20  km/h  (slow city)     20   -0.66   -0.58   -2.06   -2.38
+  20–40  km/h  (city)          76    0.32    0.27   -0.74   -1.39
+  40–60  km/h  (arterial)     102    1.41    0.92   -0.06   -2.04
+  60–80  km/h  (fast arterial)     58    0.80    0.39   -0.33   -1.83
+  80–100 km/h  (freeway entry)     27    0.08    0.07   -0.70   -2.85
+  100+   km/h  (freeway)       39    0.15    0.27   -1.10   -2.85
+
+  P10 of event Z-scores = the minimum threshold that catches 90% of
+  known events in that bucket. Should be BELOW your detection threshold.
+
+── THRESHOLD RECOMMENDATION ──────────────────────────────────────────
+
+  Based on your data, suggested speed-adaptive thresholds:
+
+  10–20  km/h  (slow city)  → 1.25  (↓ lower from 4.0)
+  20–40  km/h  (city)       → 1.75  (↓ lower from 4.0)
+  40–60  km/h  (arterial)   → 2.25  (↓ lower from 4.0)
+  60–80  km/h  (fast arterial)  → 2.00  (↓ lower from 4.0)
+  80–100 km/h  (freeway entry)  → 2.00  (↓ lower from 4.0)
+  100+   km/h  (freeway)    → 1.75  (↓ lower from 4.0)
+
+  These are P98 thresholds — calibrated so 2% of normal driving at that
+  speed would trigger a false positive. Adjust the target % to trade
+  sensitivity vs specificity.
+
+========================================================================

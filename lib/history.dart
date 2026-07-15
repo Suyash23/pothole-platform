@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'models.dart';
 import 'road_db.dart';
+import 'sandbox.dart';
 
 class TripsHistoryScreen extends StatefulWidget {
   const TripsHistoryScreen({super.key});
@@ -96,6 +97,17 @@ class _TripsHistoryScreenState extends State<TripsHistoryScreen> {
                               Text(
                                 'Fidelity: ${trip.fidelity} | Duration: $durationStr',
                               ),
+                              if (trip.scenario != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 2.0),
+                                  child: Text(
+                                    'Scenario: ${trip.scenario}',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.teal,
+                                    ),
+                                  ),
+                                ),
                               if (gpsSnapshot.hasData)
                                 Text(
                                   'Min: ${minVal.toStringAsFixed(2)}σ | Max: ${maxVal.toStringAsFixed(2)}σ | Avg: ${avgVal.toStringAsFixed(2)}σ',
@@ -104,7 +116,41 @@ class _TripsHistoryScreenState extends State<TripsHistoryScreen> {
                           ),
                           trailing: const Icon(Icons.chevron_right),
                           onTap: () {
-                            Navigator.of(context).pop(trip.id);
+                            showModalBottomSheet(
+                              context: context,
+                              builder: (sheetCtx) {
+                                return SafeArea(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      ListTile(
+                                        leading: const Icon(Icons.map),
+                                        title: const Text('Load onto Map'),
+                                        onTap: () {
+                                          Navigator.of(sheetCtx).pop();
+                                          Navigator.of(context).pop(trip.id);
+                                        },
+                                      ),
+                                      ListTile(
+                                        leading: const Icon(Icons.analytics),
+                                        title: const Text('Open Algorithm Sandbox'),
+                                        onTap: () {
+                                          Navigator.of(sheetCtx).pop();
+                                          Navigator.of(context).push(
+                                            MaterialPageRoute(
+                                              builder: (_) => AlgorithmSandboxScreen(
+                                                tripId: trip.id,
+                                                scenario: trip.scenario,
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            );
                           },
                         );
                       },

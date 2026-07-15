@@ -26,14 +26,22 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_dartVmService._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Allow Flutter tools to connect to the Dart VM Service.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>We use your location to record road quality during trips.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>We use your location to record road quality during trips.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
 	<string>We use your location to record road quality during trips.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>We use your location to record road quality during trips.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>We use motion sensors to detect vibration intensity for road quality mapping.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>This app requires access to the photo library to choose replay data files.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -77,12 +85,6 @@
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Allow Flutter tools to connect to the Dart VM Service.</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_dartVmService._tcp</string>
 	</array>
 </dict>
 </plist>

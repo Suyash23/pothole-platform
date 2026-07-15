@@ -1,0 +1,44 @@
+YESTERDAY'S DRIVE — 2026-07-13  (corrected: reads subcollections)
+==============================================================
+
+Drive 2kJ2Az5umbgsig5zeIjL  [has data, NOT finalized]
+  Normal Drive | Tesla Model Y | Stiff Mount
+  Time    : 09:26:33 → —   (0s)
+  Samples : 1535   (parent doc claimed 0)
+  Speed   : mean 60.0  max 121.2 km/h
+  Z-score : mean -0.10  p90 1.01  p99 2.62  max 4.48
+  Colors  : green 1430  orange 19  red 27  yellow 59
+  Events  : 28  (concrete_joint, pothole, turn)
+  Would flag under new top-20% thresholds: 4 sample(s)
+
+Drive KvW6NqksSl35uO8P7BgV  [empty/stuck]
+  Normal Drive | Tesla Model Y | Stiff Mount
+  Time    : 21:20:06 → —   (0s)
+  Samples : 0   (parent doc claimed 0)
+
+Drive 4bGwbCF8EBdKcwyRNnnT  [finalized]
+  Normal Drive | Tesla Model Y | Stiff Mount
+  Time    : 21:20:06 → 21:21:37   (91s)
+  Samples : 4   (parent doc claimed 50)
+  Speed   : mean 24.2  max 30.6 km/h
+  Z-score : mean -0.09  p90 0.13  p99 0.18  max 0.19
+  Colors  : green 4
+  Events  : 4  (concrete_joint, pothole, turn)
+  Would flag under new top-20% thresholds: 0 sample(s)
+
+Drive ftHpDIgGb4yfypNdFHg2  [empty/stuck]
+  Normal Drive | Tesla Model Y | Stiff Mount
+  Time    : 21:30:02 → —   (0s)
+  Samples : 0   (parent doc claimed 0)
+
+Drive ybsLPVIDBYizzJG6oEYt  [has data, NOT finalized]
+  Normal Drive | Tesla Model Y | Stiff Mount
+  Time    : 21:30:04 → 21:41:15   (671s)
+  Samples : 380   (parent doc claimed 416)
+  Speed   : mean 70.2  max 124.2 km/h
+  Z-score : mean -0.37  p90 1.21  p99 3.33  max 7.50
+  Colors  : green 344  orange 5  red 11  yellow 20
+  Events  : 30  (bump, concrete_joint, pothole)
+  Would flag under new top-20% thresholds: 2 sample(s)
+
+TOTAL real samples across all 2026-07-13 docs: 1919

@@ -9,6 +9,7 @@ abstract class SensorSource {
   Stream<UserAccelerometerEvent> get userAccelerometer;
   Stream<GyroscopeEvent> get gyroscope;
   Future<Position> getCurrentPosition();
+  Stream<Position> get positionStream;
 }
 
 class RealSensorSource implements SensorSource {
@@ -30,6 +31,14 @@ class RealSensorSource implements SensorSource {
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
     );
   }
+
+  @override
+  Stream<Position> get positionStream => Geolocator.getPositionStream(
+    locationSettings: const LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 0,
+    ),
+  );
 }
 
 class SyntheticSensorSource implements SensorSource {
@@ -42,13 +51,16 @@ class SyntheticSensorSource implements SensorSource {
   late final StreamController<AccelerometerEvent> _accelCtrl;
   late final StreamController<UserAccelerometerEvent> _userAccelCtrl;
   late final StreamController<GyroscopeEvent> _gyroCtrl;
+  late final StreamController<Position> _gpsCtrl;
   
   Timer? _timer;
+  Timer? _gpsTimer;
 
   SyntheticSensorSource(this.traceData, this.interval) {
     _accelCtrl = StreamController<AccelerometerEvent>.broadcast();
     _userAccelCtrl = StreamController<UserAccelerometerEvent>.broadcast();
     _gyroCtrl = StreamController<GyroscopeEvent>.broadcast();
+    _gpsCtrl = StreamController<Position>.broadcast();
     
     _startPlayback();
   }
@@ -61,6 +73,7 @@ class SyntheticSensorSource implements SensorSource {
     _timer = Timer.periodic(interval, (_) {
       if (_idx >= az.length) {
         _timer?.cancel();
+        _gpsTimer?.cancel();
         return;
       }
       
@@ -80,6 +93,14 @@ class SyntheticSensorSource implements SensorSource {
       
       _idx++;
     });
+
+    // Simulated GPS stream pushes updates every 1 second
+    _gpsTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      try {
+        final pos = await getCurrentPosition();
+        _gpsCtrl.add(pos);
+      } catch (_) {}
+    });
   }
 
   @override
@@ -90,6 +111,9 @@ class SyntheticSensorSource implements SensorSource {
   
   @override
   Stream<GyroscopeEvent> get gyroscope => _gyroCtrl.stream;
+
+  @override
+  Stream<Position> get positionStream => _gpsCtrl.stream;
 
   @override
   Future<Position> getCurrentPosition() async {

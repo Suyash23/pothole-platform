@@ -1,0 +1,58 @@
+YESTERDAY'S DRIVE — 2026-07-07 (Pacific)
+========================================================
+
+Trip doc      : NKb1B0ozHblHnznD854O
+Start         : 2026-07-07 19:37:17 PDT
+End           : 2026-07-07 20:08:12 PDT
+Duration      : 30.9 min (1854 s)
+Vehicle       : Tesla Model Y   Mount: Stiff Mount
+Scenario      : Normal Drive   Fidelity: high
+Device / OS   : localhost / ios Version 26.3 (Build 23D127)
+GPS samples   : 1139   Events: 144   Upload complete: True
+
+DETECTIONS BY TYPE (all 144 events)
+--------------------------------------------------------
+  pothole            95   (66.0%)
+  concrete_joint     27   (18.8%)
+  turn               14   (9.7%)
+  bump                5   (3.5%)
+  rough_road          2   (1.4%)
+  lane_change         1   (0.7%)
+
+SEVERITY (zScore, all 144 events)
+--------------------------------------------------------
+  mean 4.49   median 4.33   p90 7.21   max 12.08   min -1.0
+  events zScore >= 6 (severe) : 29
+  events zScore >= 4          : 82
+  peak vertical g (nonzero)   : mean 0.38g  max 0.61g
+  flagged false-positive      : 0
+
+MOST SEVERE POTHOLES WITH LOCATION (from the 45 latest events pulled)
+--------------------------------------------------------
+  z= 12.1  0.51g   47.9 km/h  (37.52159,-121.98851)  2026-07-07 20:05:10 PDT
+  z= 10.7  0.44g   49.4 km/h  (37.52300,-121.98743)  2026-07-07 20:04:57 PDT
+  z= 10.2  0.42g   59.9 km/h  (37.52219,-121.98565)  2026-07-07 20:03:15 PDT
+  z=  8.2  0.39g   43.3 km/h  (37.52381,-121.99702)  2026-07-07 20:06:17 PDT
+  z=  8.2  0.53g   36.1 km/h  (37.46930,-121.92901)  2026-07-07 19:54:48 PDT
+  z=  8.2  0.35g   46.1 km/h  (37.52231,-121.98788)  2026-07-07 20:05:03 PDT
+  z=  7.9  0.39g   35.4 km/h  (37.52408,-121.99750)  2026-07-07 20:06:21 PDT
+  z=  7.0  0.35g   27.1 km/h  (37.52424,-121.99782)  2026-07-07 20:06:25 PDT
+  z=  7.0  0.35g   39.7 km/h  (37.52492,-121.99765)  2026-07-07 20:06:44 PDT
+  z=  5.7  0.41g  113.3 km/h  (37.45497,-121.92299)  2026-07-07 19:53:46 PDT
+
+ROUTE (from GPS in samples + events)
+--------------------------------------------------------
+  Start ~ 37.335, -122.014  (Cupertino/Sunnyvale area)
+  End   ~ 37.526, -121.997  (Fremont area)
+  Includes freeway segment (speeds up to ~122 km/h).
+
+NOTE ON COMPLETENESS
+--------------------------------------------------------
+  Pulled from Firestore via REST (this environment cannot run the
+  Firestore SDK / reach it directly; data was paged through the
+  size-limited web fetch). Captured in full: trip metadata, all 144
+  event type+severity values, and full fields (incl. GPS) for the 45
+  latest events. NOT downloaded: GPS coords for the earliest ~99
+  events, and the raw 1,139-reading sensor stream (27 batch docs,
+  ~2 MB). Say the word and I can pull specific sample batches or the
+  early-event locations.

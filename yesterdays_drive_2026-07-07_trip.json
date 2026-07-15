@@ -1,0 +1,14 @@
+{
+  "docId": "NKb1B0ozHblHnznD854O",
+  "vehicle": "Tesla Model Y",
+  "mountType": "Stiff Mount",
+  "scenario": "Normal Drive",
+  "fidelity": "high",
+  "osVersion": "ios Version 26.3 (Build 23D127)",
+  "deviceModel": "localhost",
+  "uploadComplete": true,
+  "startTimeMs": 1783478237915,
+  "endTimeMs": 1783480092351,
+  "sampleCount": 1139,
+  "eventCount": 144
+}
