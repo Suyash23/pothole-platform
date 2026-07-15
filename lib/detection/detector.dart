@@ -154,6 +154,15 @@ class EventDetector {
   // ── Double-hit bump ────────────────────────────────────────────────────────
   final List<_BumpHit> _recentBumpHits = [];
 
+  // ── Rough patch (quick succession of impacts) ──────────────────────────────
+  // Timestamps of recent impact CANDIDATES (pothole / bump / speed bump, the
+  // moment they pass their gates — before per-type cooldowns throttle them).
+  // Concrete joints are excluded (see DetectionConfig.roughPatchWindowMs).
+  final Queue<int> _impactClusterTs = Queue<int>();
+  // While `ts <= _roughPatchActiveUntil` a rough patch is in progress and the
+  // individual per-impact alerts are suppressed in favour of one rough_road.
+  int _roughPatchActiveUntil = 0;
+
   // ── Concrete-joint storm guard (v1.3.1) ────────────────────────────────────
   // Timestamps of recent joint CANDIDATES (gates passed, before cooldown). If
   // too many arrive in a short window the surface is textured, not jointed.
@@ -200,6 +209,8 @@ class EventDetector {
       _lastSmoothed = 0.0;
       _roughSince = null;
       _recentBumpHits.clear();
+      _impactClusterTs.clear();
+      _roughPatchActiveUntil = 0;
       _exSince = 0;
       _exPeakZ = _exPeakG = _exPeakJerk = 0.0;
       _smoothedHoriz = 0.0;
@@ -314,7 +325,8 @@ class EventDetector {
         if (_roughSince == null) {
           _roughSince = ts;
         } else if (ts - _roughSince! >= 3000) {
-          if (_lastRoughRoadTs == 0 || ts - _lastRoughRoadTs >= 10000) {
+          if (_lastRoughRoadTs == 0 ||
+              ts - _lastRoughRoadTs >= DetectionConfig.roughRoadCooldownMs) {
             _lastRoughRoadTs = ts;
             events.add(DetectedEvent(
               ts: ts,
@@ -339,6 +351,8 @@ class EventDetector {
       _turnBelowSince = 0;
       _exSince = 0;
       _exPeakZ = _exPeakG = _exPeakJerk = 0.0;
+      _impactClusterTs.clear();
+      _roughPatchActiveUntil = 0;
     }
 
     return DetectorResult(
@@ -370,7 +384,7 @@ class EventDetector {
         peakG >= DetectionConfig.bumpMinPeakG &&
         duration >= DetectionConfig.bumpMinDurationMs &&
         duration <= DetectionConfig.bumpMaxDurationMs) {
-      final bool matchedBump = _matchDoubleHitBump(
+      final DetectedEvent? bump = _matchDoubleHitBump(
         startTs: startTs,
         endTs: endTs,
         duration: duration,
@@ -378,9 +392,12 @@ class EventDetector {
         peakG: peakG,
         jerk: peakJerk,
         speedKmh: speedKmh,
-        events: events,
       );
-      if (matchedBump) return;
+      if (bump != null) {
+        final bool inPatch = _registerImpact(endTs, bump.peakG, speedKmh, events);
+        if (!inPatch) events.add(bump);
+        return;
+      }
     }
 
     if (laneChanging) return; // raised markers mimic defects — suppress.
@@ -395,8 +412,12 @@ class EventDetector {
     if (peakG >= DetectionConfig.potholeMinPeakG &&
         peakJerk >= DetectionConfig.potholeMinJerk &&
         rawZ >= potholeZ) {
-      if (_lastPotholeTs == 0 ||
-          endTs - _lastPotholeTs >= DetectionConfig.potholeCooldownMs) {
+      // Feed the rough-patch cluster; if a patch is active the single rough_road
+      // alert stands in for this pothole and the individual ping is suppressed.
+      final bool inPatch = _registerImpact(endTs, peakG, speedKmh, events);
+      if (!inPatch &&
+          (_lastPotholeTs == 0 ||
+              endTs - _lastPotholeTs >= DetectionConfig.potholeCooldownMs)) {
         _lastPotholeTs = endTs;
         events.add(DetectedEvent(
           ts: startTs,
@@ -416,8 +437,10 @@ class EventDetector {
         peakJerk <= DetectionConfig.speedBumpMaxJerk &&
         duration >= DetectionConfig.speedBumpMinDurationMs &&
         duration <= DetectionConfig.speedBumpMaxDurationMs) {
-      if (_lastSpeedBumpTs == 0 ||
-          endTs - _lastSpeedBumpTs >= DetectionConfig.speedBumpCooldownMs) {
+      final bool inPatch = _registerImpact(endTs, peakG, speedKmh, events);
+      if (!inPatch &&
+          (_lastSpeedBumpTs == 0 ||
+              endTs - _lastSpeedBumpTs >= DetectionConfig.speedBumpCooldownMs)) {
         _lastSpeedBumpTs = endTs;
         events.add(DetectedEvent(
           ts: startTs,
@@ -473,9 +496,10 @@ class EventDetector {
     }
   }
 
-  /// Returns true when this hit completed a double-hit bump (front axle then
-  /// rear axle) and a [EventTypes.bump] event was emitted.
-  bool _matchDoubleHitBump({
+  /// Returns the [EventTypes.bump] event when this hit completes a double-hit
+  /// bump (front axle then rear axle), else null. The caller decides whether to
+  /// emit it (it is suppressed while a rough patch is active).
+  DetectedEvent? _matchDoubleHitBump({
     required int startTs,
     required int endTs,
     required int duration,
@@ -483,7 +507,6 @@ class EventDetector {
     required double peakG,
     required double jerk,
     required double speedKmh,
-    required List<DetectedEvent> events,
   }) {
     _recentBumpHits.add(_BumpHit(startTs, duration, peakZ, peakG, jerk));
     _recentBumpHits.removeWhere((h) => startTs - h.ts > 4000);
@@ -514,7 +537,7 @@ class EventDetector {
 
     if (matchedIdx != -1) {
       final prev = _recentBumpHits[matchedIdx];
-      events.add(DetectedEvent(
+      final bump = DetectedEvent(
         ts: prev.ts,
         endTs: endTs,
         type: EventTypes.bump,
@@ -522,11 +545,45 @@ class EventDetector {
         peakG: math.max(prev.peakG, peakG),
         jerk: math.max(prev.jerk, jerk),
         speedKmh: speedKmh,
-      ));
+      );
       _recentBumpHits.removeRange(0, matchedIdx + 1);
-      return true;
+      return bump;
     }
-    return false;
+    return null;
+  }
+
+  /// Records an impact candidate (pothole / bump / speed bump) into the
+  /// rough-patch cluster and returns whether a rough patch is currently active.
+  ///
+  /// When [DetectionConfig.roughPatchMinImpacts] candidates fall inside a
+  /// [DetectionConfig.roughPatchWindowMs] sliding window, a single
+  /// [EventTypes.roughRoad] alert is emitted (rate-limited by
+  /// [DetectionConfig.roughRoadCooldownMs], shared with the sustained-roughness
+  /// path) and the caller suppresses its individual per-impact alert, so a
+  /// broken stretch reads as one "rough patch" rather than a burst of pings.
+  bool _registerImpact(
+      int ts, double peakG, double speedKmh, List<DetectedEvent> events) {
+    _impactClusterTs.add(ts);
+    final int cutoff = ts - DetectionConfig.roughPatchWindowMs;
+    while (_impactClusterTs.isNotEmpty && _impactClusterTs.first < cutoff) {
+      _impactClusterTs.removeFirst();
+    }
+
+    if (_impactClusterTs.length >= DetectionConfig.roughPatchMinImpacts) {
+      _roughPatchActiveUntil = ts + DetectionConfig.roughPatchWindowMs;
+      if (_lastRoughRoadTs == 0 ||
+          ts - _lastRoughRoadTs >= DetectionConfig.roughRoadCooldownMs) {
+        _lastRoughRoadTs = ts;
+        events.add(DetectedEvent(
+          ts: ts,
+          type: EventTypes.roughRoad,
+          zScore: 0.0,
+          peakG: peakG,
+          speedKmh: speedKmh,
+        ));
+      }
+    }
+    return ts <= _roughPatchActiveUntil;
   }
 
   double _potholeThresholdForSpeed(double speedKmh) {

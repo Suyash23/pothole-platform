@@ -185,6 +185,58 @@ void main() {
     });
   });
 
+  group('Rough patch (quick succession of potholes)', () {
+    // Feeds [count] sharp pothole-like impulses, each [spacingMs] apart, with
+    // quiet road in between.
+    List<DetectedEvent> feedPotholeBurst(
+      EventDetector d,
+      int startTs, {
+      required int count,
+      required int spacingMs,
+      double speed = 50,
+    }) {
+      final events = <DetectedEvent>[];
+      int ts = startTs;
+      final int gapTicks = (spacingMs ~/ _dtMs) - 6;
+      for (int p = 0; p < count; p++) {
+        for (final v in [0.3, 0.6, 0.3, 0.0, 0.0, 0.0]) {
+          events.addAll(_tick(d, ts, v, speed: speed).events);
+          ts += _dtMs;
+        }
+        for (int i = 0; i < gapTicks; i++) {
+          events.addAll(_tick(d, ts, i.isEven ? 0.01 : -0.01, speed: speed).events);
+          ts += _dtMs;
+        }
+      }
+      return events;
+    }
+
+    test('3+ potholes in quick succession → one rough_road, not a burst', () {
+      final d = EventDetector();
+      final ts = _warmup(d, 100000);
+      // 5 potholes ~1.5 s apart → all inside the 6 s window.
+      final events = feedPotholeBurst(d, ts, count: 5, spacingMs: 1500);
+      expect(events.any((e) => e.type == EventTypes.roughRoad), isTrue,
+          reason: 'a quick succession of potholes is a rough patch');
+      final potholes = events.where((e) => e.type == EventTypes.pothole).length;
+      expect(potholes, lessThan(3),
+          reason: 'individual pothole pings are suppressed during the patch, '
+              'replaced by a single rough_road alert');
+    });
+
+    test('isolated potholes far apart do NOT form a rough patch', () {
+      final d = EventDetector();
+      final ts = _warmup(d, 100000);
+      // 3 potholes 10 s apart → never 3 within the 6 s window.
+      final events = feedPotholeBurst(d, ts, count: 3, spacingMs: 10000);
+      expect(events.any((e) => e.type == EventTypes.roughRoad), isFalse,
+          reason: 'well-separated single potholes are not a rough patch');
+      expect(events.where((e) => e.type == EventTypes.pothole).length,
+          greaterThanOrEqualTo(2),
+          reason: 'isolated potholes still each alert individually');
+    });
+  });
+
   group('Turn vs lane change (heading-integrated)', () {
     test('sustained one-direction yaw → turn, never lane_change', () {
       final d = EventDetector();

@@ -564,6 +564,33 @@ class DetectionConfig {
   static const int concreteJointStormCount = 3;
   static const int concreteJointStormWindowMs = 20000;
 
+  // ── Rough patch (quick succession of potholes) ─────────────────────────────
+  //
+  // A "rough patch" is several genuine impacts (pothole / bump / speed bump) in
+  // quick succession — a broken stretch of road, as opposed to one isolated
+  // defect. It is detected by counting impact CANDIDATES (the moment they pass
+  // their type gates, BEFORE the per-type cooldown throttles them) inside a
+  // sliding window: [roughPatchMinImpacts] within [roughPatchWindowMs] raises a
+  // single `rough_road` alert instead of a rapid-fire string of pothole pings.
+  //
+  // Concrete joints are deliberately NOT counted — evenly-spaced joints on a
+  // smooth concrete highway are frequent but are not a rough patch (that is what
+  // the joint-storm guard above is for). This targets clustered real defects.
+  //
+  // Sizing (2026-07-15, from the events of the roughest recent drives): impacts
+  // in a genuine rough stretch arrive well under ~2 s apart even after the 3 s
+  // pothole cooldown throttles the *emitted* events; counting pre-cooldown
+  // candidates, 3-within-6 s reliably separates a broken patch from the isolated
+  // single defects that dominate normal driving. Tune after a labelled rough
+  // drive.
+  static const int roughPatchWindowMs = 6000;
+  static const int roughPatchMinImpacts = 3;
+
+  /// Minimum gap between consecutive `rough_road` alerts (ms). Shared by the
+  /// sustained-roughness path and the rough-patch cluster path so they cannot
+  /// double-fire on the same stretch.
+  static const int roughRoadCooldownMs = 10000;
+
   // ── Pothole detection ────────────────────────────────────────────────────
   //
   // A pothole is detected only when BOTH a relative gate (Z-score vs. rolling
