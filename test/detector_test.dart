@@ -317,6 +317,41 @@ void main() {
           reason: 'defect alerts must be suppressed while crossing the line '
               '(raised markers are hit during crossover/phase 2)');
     });
+
+    test(
+        'quick, assertive lane change (peak yaw > turn threshold) is not '
+        'swallowed by the turn interlock', () {
+      // Regression: laneChangeYawMaxRads (0.80) is well above
+      // turnYawThresholdRads (0.3), so a real lane change's peak yaw commonly
+      // exceeds 0.3 rad/s briefly — the old interlock reset lane-change
+      // tracking on the very FIRST such sample (before the S-curve ever
+      // reached its direction reversal), which is why real lane changes were
+      // almost never detected in practice. Each phase here is 320 ms — above
+      // laneChangeYawMaxRads is never touched, but the peak (0.45 rad/s) is
+      // above turnYawThresholdRads and each phase is under turnMinDurationMs
+      // (400 ms), so a correct implementation must still confirm lane_change
+      // and must never confirm turn.
+      final d = EventDetector();
+      int ts = _warmup(d, 100000, speed: 100);
+      final events = <DetectedEvent>[];
+      void feed(double yaw, int n) {
+        for (int i = 0; i < n; i++) {
+          events.addAll(_tick(d, ts, 0.0, yaw: yaw, speed: 100).events);
+          ts += _dtMs;
+        }
+      }
+
+      feed(0.45, 16); //  phase 1: 320 ms of assertive yaw → ~8.2° heading
+      feed(0.0, 5); //     crossover: 100 ms straddling the line
+      feed(-0.45, 16); //  phase 2: 320 ms return, mirrors phase 1
+      feed(0.0, 10); //    settle → confirm
+
+      expect(events.any((e) => e.type == EventTypes.laneChange), isTrue,
+          reason: 'a quick lane change whose peak yaw exceeds the turn '
+              'threshold must still be detected as a lane change');
+      expect(events.any((e) => e.type == EventTypes.turn), isFalse,
+          reason: 'neither phase sustains long enough to be a real turn');
+    });
   });
 
   group('Gating', () {

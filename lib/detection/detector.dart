@@ -146,6 +146,18 @@ class EventDetector {
   int _turnDirection = 0;
   int _turnBelowSince = 0;
 
+  /// True once the CURRENT same-direction yaw excursion has been sustained for
+  /// turnMinDurationMs — i.e. a turn the lane-change interlock should trust.
+  /// Deliberately separate from [_turnActiveSince]/[_turnBelowSince]: those
+  /// carry a 120 ms noise-tolerance grace period (for bridging brief sensor
+  /// dropouts WITHIN a genuine turn), which a lane change's crossover dip can
+  /// easily be shorter than — so reusing that bookkeeping for the interlock
+  /// let a real lane change's crossover→phase-2 transition get vetoed by
+  /// "elapsed time since phase 1 started" even though the direction had
+  /// already reversed. This flag has NO grace period: any drop below the turn
+  /// threshold clears it immediately.
+  bool _turnConfirmed = false;
+
   // ── Braking low-pass (longitudinal) ────────────────────────────────────────
   double _smoothedHoriz = 0.0;
   int _lastHorizTs = 0;
@@ -349,6 +361,7 @@ class EventDetector {
       _turnActiveSince = 0;
       _turnDirection = 0;
       _turnBelowSince = 0;
+      _turnConfirmed = false;
       _exSince = 0;
       _exPeakZ = _exPeakG = _exPeakJerk = 0.0;
       _impactClusterTs.clear();
@@ -607,7 +620,9 @@ class EventDetector {
         // Sign reversal → S-curve oscillation, not a sustained turn.
         _turnActiveSince = 0;
         _turnDirection = 0;
+        _turnConfirmed = false;
       } else if (ts - _turnActiveSince >= DetectionConfig.turnMinDurationMs) {
+        _turnConfirmed = true;
         if (_lastTurnTs == 0 ||
             ts - _lastTurnTs >= DetectionConfig.turnCooldownMs) {
           _lastTurnTs = ts;
@@ -620,12 +635,18 @@ class EventDetector {
               speedKmh: speedKmh));
         }
       }
-    } else if (_turnActiveSince > 0) {
-      if (_turnBelowSince == 0) _turnBelowSince = ts;
-      if (ts - _turnBelowSince > 120) {
-        _turnActiveSince = 0;
-        _turnDirection = 0;
-        _turnBelowSince = 0;
+    } else {
+      // Below the turn threshold this tick: the interlock signal drops
+      // immediately (no grace period — see _turnConfirmed's doc comment),
+      // even though _turnActiveSince itself keeps its 120 ms noise tolerance.
+      _turnConfirmed = false;
+      if (_turnActiveSince > 0) {
+        if (_turnBelowSince == 0) _turnBelowSince = ts;
+        if (ts - _turnBelowSince > 120) {
+          _turnActiveSince = 0;
+          _turnDirection = 0;
+          _turnBelowSince = 0;
+        }
       }
     }
   }
@@ -646,8 +667,24 @@ class EventDetector {
 
   bool _updateLaneChange(
       int ts, double signedYaw, double speedKmh, List<DetectedEvent> events) {
-    // A sustained turn cannot also be a lane change.
-    if (_turnActiveSince > 0) {
+    // A CONFIRMED turn cannot also be a lane change. Gated on [_turnConfirmed]
+    // — the turn detector's own confirmation bar (turnMinDurationMs sustained
+    // in ONE direction, no grace period) — NOT merely "yaw exceeded the turn
+    // threshold once" — a real lane change's peak yaw commonly briefly exceeds
+    // turnYawThresholdRads (laneChangeYawMaxRads=0.80 vs turnYawThresholdRads
+    // =0.3, so the ranges overlap). Resetting on the first over-threshold
+    // sample killed the S-curve tracker before it ever reached the direction
+    // reversal, which is why real lane changes were almost never detected.
+    // [_turnConfirmed] (rather than raw _turnActiveSince elapsed time) also
+    // matters here: _turnActiveSince carries its own 120 ms noise-tolerance
+    // grace period, which a lane change's crossover dip can be shorter than —
+    // using it directly let elapsed-time-since-phase-1-start cross the 400 ms
+    // bar during the crossover, vetoing phase 2 even though the direction had
+    // already reversed. The lane-change machine's own net-heading + crossover
+    // gates already reject genuine turns on their own (a real turn never
+    // reverses direction back near zero net heading), so this interlock only
+    // needs to catch turns that actually got that far.
+    if (_turnConfirmed) {
       _resetLaneChangePhases();
       return _lcSuppressActive(ts);
     }
