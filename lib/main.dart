@@ -836,10 +836,14 @@ class _DetectionTickerState extends State<_DetectionTicker> {
   bool _wasRecording = false;
 
   /// Impact types the driver can correct an alert between (icon-only buttons).
+  /// roughRoad included so a rough-patch alert gets the same correction row as
+  /// pothole/bump/concrete_joint (e.g. "that single ping was actually part of
+  /// a rough patch", or vice versa).
   static const List<String> _correctableTypes = [
     EventTypes.pothole,
     EventTypes.bump,
     EventTypes.concreteJoint,
+    EventTypes.roughRoad,
   ];
 
   Timer? _fadeTimer;
