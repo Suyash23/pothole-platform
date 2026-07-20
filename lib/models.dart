@@ -672,16 +672,31 @@ class DetectionConfig {
   static const double concreteJointMinJerk = 3.0;
 
   // Lane Change Detection
-  /// Minimum signed yaw rate (rad/s) to begin a lane-change phase.
-  ///
-  /// v1.3.1: lowered 0.12 → 0.05. The old comment claimed highway lane changes
-  /// are 0.15–0.5 rad/s, but that is off by ~2×: a normal 3.5 m lane change at
-  /// 100 km/h over ~4 s peaks at only ≈0.08 rad/s (peak heading ≈3°, sine
-  /// profile). 0.12 was above almost every real highway lane change, which is
-  /// why the 2026-07-01 highway drive produced ZERO lane_change events. Noise
-  /// rejection is handled by the per-phase duration + integrated-heading gates
-  /// and the cooldown, not by the raw entry threshold.
-  static const double laneChangeYawMinRads = 0.05;
+  //
+  // v1.3.3: the fixed yaw-rate entry threshold (0.12 in v1.3.0, 0.05 in
+  // v1.3.1) is replaced by a SPEED-SCALED one. A lane change is ~3.5 m of
+  // lateral displacement at ANY speed, so its yaw signature shrinks as speed
+  // grows: at 110 km/h it peaks at only ~0.04–0.08 rad/s, while at 35 km/h
+  // ordinary lane-keeping wander easily exceeds 0.05. The 2026-07-18 drives
+  // proved no single constant can work: 30 alerts fired, 0 confirmed, real
+  // highway lane changes still missed. The physically meaningful constant is
+  // lateral acceleration: a_lat = yawRate × speed. We hold THAT constant and
+  // derive the per-tick yaw entry floor as a_lat / v, clamped to sane bounds.
+
+  /// Minimum lateral acceleration (m/s²) for a yaw excursion to open a
+  /// lane-change phase: yawEntryFloor = this / speedMps. A deliberate lane
+  /// change is driven at ≳0.8 m/s² laterally; lane-keeping wander is well
+  /// below that at city speed.
+  static const double laneChangeMinLatAccelMps2 = 0.8;
+
+  /// Lower clamp on the derived yaw entry floor (rad/s) — keeps the entry
+  /// gate above the gyro noise floor at very high speed.
+  static const double laneChangeYawEntryFloorRads = 0.03;
+
+  /// Upper clamp on the derived yaw entry floor (rad/s) — at the 30 km/h
+  /// minimum speed the raw formula gives ~0.10; anything above this would
+  /// start rejecting brisk city lane changes.
+  static const double laneChangeYawEntryCeilRads = 0.12;
 
   /// Yaw rate above this is too aggressive for a lane change — it's a sharp turn.
   static const double laneChangeYawMaxRads = 0.80;

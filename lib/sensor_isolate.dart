@@ -89,6 +89,7 @@ class SensorProcessor {
   // DB Batching
   final List<Map<String, dynamic>> _gpsBatch = [];
   final List<Map<String, dynamic>> _accelBatch = [];
+  final List<Map<String, dynamic>> _lcDiagBatch = [];
 
   // Sensors
   StreamSubscription<AccelerometerEvent>? _accelSub;
@@ -278,6 +279,26 @@ class SensorProcessor {
         if (_lastIsBump && now > _bumpResetTime) _lastIsBump = false;
         _lastAccelMs = now;
 
+        // Lane-change telemetry → SQLite (batched with the sample writes).
+        for (final d in result.lcDiags) {
+          _lcDiagBatch.add({
+            'trip_id': tripId,
+            'ts': d.ts,
+            'outcome': d.outcome,
+            'phase_start_ts': d.phaseStartTs,
+            'phase1_ms': d.phase1Ms,
+            'crossover_ms': d.crossoverMs,
+            'phase2_ms': d.phase2Ms,
+            'phase1_heading_deg': d.phase1HeadingDeg,
+            'phase2_heading_deg': d.phase2HeadingDeg,
+            'phase1_lat_m': d.phase1LatM,
+            'phase2_lat_m': d.phase2LatM,
+            'peak_yaw_rads': d.peakYawRads,
+            'yaw_entry_rads': d.yawEntryRads,
+            'speed_kmh': d.speedKmh,
+          });
+        }
+
         // Route detector events → UI alerts + per-sample detector tags.
         for (final ev in result.events) {
           if (ev.type == EventTypes.bump) {
@@ -455,21 +476,27 @@ class SensorProcessor {
   }
 
   Future<void> _flushBatch() async {
-    if (_gpsBatch.isEmpty && _accelBatch.isEmpty) return;
-    
+    if (_gpsBatch.isEmpty && _accelBatch.isEmpty && _lcDiagBatch.isEmpty) {
+      return;
+    }
+
     final db = await RoadDb.instance.database;
     final batch = db.batch();
-    
+
     for (final g in _gpsBatch) {
       batch.insert('gps_samples', g);
     }
     for (final a in _accelBatch) {
       batch.insert('accel_samples', a);
     }
-    
+    for (final d in _lcDiagBatch) {
+      batch.insert('lc_diags', d);
+    }
+
     _gpsBatch.clear();
     _accelBatch.clear();
-    
+    _lcDiagBatch.clear();
+
     await batch.commit(noResult: true);
   }
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'dart:async';
@@ -59,6 +60,7 @@ class RoadQualityHome extends StatefulWidget {
 
 class _RoadQualityHomeState extends State<RoadQualityHome> {
   late final RoadRecorder _recorder;
+  late final _AlertController _alertController;
   final MapController _mapController = MapController();
   bool _autoCenter = true;
 
@@ -72,6 +74,7 @@ class _RoadQualityHomeState extends State<RoadQualityHome> {
   void initState() {
     super.initState();
     _recorder = widget.recorder ?? RoadRecorder(RoadDb.instance);
+    _alertController = _AlertController(_recorder);
     _recorder.loadLatestTrip();
     _recorder.addListener(_onRecorderChanged);
     // Show any locally-stranded trips immediately, then retry them silently.
@@ -117,6 +120,7 @@ class _RoadQualityHomeState extends State<RoadQualityHome> {
 
   @override
   void dispose() {
+    _alertController.dispose();
     _recorder.removeListener(_onRecorderChanged);
     _recorder.stop();
     _recorder.dispose();
@@ -194,7 +198,7 @@ class _RoadQualityHomeState extends State<RoadQualityHome> {
                 recentVibrations: _recorder.recentVibrations,
                 recorder: _recorder,
               ),
-              _DetectionTicker(recorder: _recorder),
+              _DetectionTicker(controller: _alertController),
               Expanded(
                 child: Stack(
                   children: [
@@ -234,6 +238,10 @@ class _RoadQualityHomeState extends State<RoadQualityHome> {
                     ),
                     if (_recorder.isRecording)
                       _RightSideStopButton(onStop: _stop),
+                    if (_recorder.isRecording)
+                      _MarkLaneChangeButton(recorder: _recorder),
+                    if (_recorder.isRecording)
+                      _SideCorrectionPanel(controller: _alertController),
                     if (!_recorder.isRecording)
                       _TopRightSelectorsOverlay(
                         selectedScenario: _selectedScenario,
@@ -802,24 +810,18 @@ class _FidelityLegend extends StatelessWidget {
   }
 }
 
-/// Real-time alert banner: the driver confirms or rejects each detected event
-/// while driving, so ground truth is captured live (no post-trip review).
-///
-/// When a detector event fires, the banner shows its type, severity, age and a
-/// per-trip counter, with two actions:
-///   • ✓ Confirm    → records positive ground truth (the alert was real).
-///   • ✗ False alarm → records negative ground truth (reduces the FP rate).
-/// Acting on an alert dismisses the banner; if left unanswered it fades after
-/// [_fadeAfter] so a stale prompt is never matched to a later jolt.
-class _DetectionTicker extends StatefulWidget {
-  const _DetectionTicker({required this.recorder});
-  final RoadRecorder recorder;
+/// Shared state for the live alert flow (v1.3.4): ONE controller owns the
+/// latest detector alert and its resolution, and both the top banner
+/// ([_DetectionTicker]) and the right-side correction panel
+/// ([_SideCorrectionPanel]) render from it — so acting in either place
+/// resolves the alert everywhere and double-labelling is impossible.
+class _AlertController extends ChangeNotifier {
+  _AlertController(this.recorder) {
+    _sub = recorder.anomalyStream.listen(_onEvent);
+    recorder.addListener(_onRecorderChanged);
+    _wasRecording = recorder.isRecording;
+  }
 
-  @override
-  State<_DetectionTicker> createState() => _DetectionTickerState();
-}
-
-class _DetectionTickerState extends State<_DetectionTicker> {
   /// Recorded silently (no ticker entry): manoeuvres need no road label.
   static const Set<String> _silentTypes = {EventTypes.braking};
 
@@ -828,64 +830,45 @@ class _DetectionTickerState extends State<_DetectionTicker> {
   /// later event's jolt.
   static const Duration _fadeAfter = Duration(seconds: 12);
 
-  AnomalyEvent? _latest;
-  int _tripCount = 0; // detections shown this trip
-  bool _latestRejected = false;
-  bool _latestConfirmed = false;
-  String? _correctedTo; // canonical type the driver corrected the alert to
-  bool _wasRecording = false;
-
-  /// Impact types the driver can correct an alert between (icon-only buttons).
-  /// roughRoad included so a rough-patch alert gets the same correction row as
-  /// pothole/bump/concrete_joint (e.g. "that single ping was actually part of
-  /// a rough patch", or vice versa).
-  static const List<String> _correctableTypes = [
+  /// Impact types the driver can correct an alert between. ALWAYS presented in
+  /// this exact order (the detected type included, highlighted) so the panel
+  /// can be operated on muscle memory while driving. roughRoad included so a
+  /// rough-patch alert gets the same corrections as pothole/bump/joint.
+  static const List<String> correctableTypes = [
     EventTypes.pothole,
     EventTypes.bump,
     EventTypes.concreteJoint,
     EventTypes.roughRoad,
   ];
 
+  final RoadRecorder recorder;
+
+  AnomalyEvent? latest;
+  int tripCount = 0; // detections shown this trip
+  bool rejected = false;
+  bool confirmed = false;
+  String? correctedTo; // canonical type the driver corrected the alert to
+
   Timer? _fadeTimer;
   Timer? _ageTicker; // repaints the "Xs ago" label once a second
   StreamSubscription<AnomalyEvent>? _sub;
+  bool _wasRecording = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _sub = widget.recorder.anomalyStream.listen(_onEvent);
-    widget.recorder.addListener(_onRecorderChanged);
-    _wasRecording = widget.recorder.isRecording;
-  }
-
-  @override
-  void didUpdateWidget(covariant _DetectionTicker oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.recorder != widget.recorder) {
-      _sub?.cancel();
-      oldWidget.recorder.removeListener(_onRecorderChanged);
-      _sub = widget.recorder.anomalyStream.listen(_onEvent);
-      widget.recorder.addListener(_onRecorderChanged);
-      _clear();
-    }
-  }
+  bool get resolved => rejected || confirmed || correctedTo != null;
 
   @override
   void dispose() {
     _sub?.cancel();
-    widget.recorder.removeListener(_onRecorderChanged);
+    recorder.removeListener(_onRecorderChanged);
     _fadeTimer?.cancel();
     _ageTicker?.cancel();
     super.dispose();
   }
 
   void _onRecorderChanged() {
-    final recording = widget.recorder.isRecording;
-    if (recording && !_wasRecording) {
-      _clear(); // new trip → reset counter
-    }
-    if (!recording && _wasRecording) {
-      _clear(); // trip ended → hide ticker
+    final recording = recorder.isRecording;
+    if (recording != _wasRecording) {
+      _clear(); // new trip → reset counter; trip ended → hide the alert
     }
     _wasRecording = recording;
   }
@@ -894,130 +877,135 @@ class _DetectionTickerState extends State<_DetectionTicker> {
     _fadeTimer?.cancel();
     _ageTicker?.cancel();
     _ageTicker = null;
-    if (mounted) {
-      setState(() {
-        _latest = null;
-        _tripCount = 0;
-        _latestRejected = false;
-        _latestConfirmed = false;
-        _correctedTo = null;
-      });
-    }
+    latest = null;
+    tripCount = 0;
+    rejected = false;
+    confirmed = false;
+    correctedTo = null;
+    notifyListeners();
   }
 
   void _onEvent(AnomalyEvent event) {
-    if (!widget.recorder.isRecording) return;
+    if (!recorder.isRecording) return;
     if (_silentTypes.contains(event.type)) return;
 
     _fadeTimer?.cancel();
-    setState(() {
-      _latest = event;
-      _tripCount++;
-      _latestRejected = false;
-      _latestConfirmed = false;
-      _correctedTo = null;
-    });
+    latest = event;
+    tripCount++;
+    rejected = false;
+    confirmed = false;
+    correctedTo = null;
     _fadeTimer = Timer(_fadeAfter, () {
-      if (mounted) setState(() => _latest = null);
+      latest = null;
+      notifyListeners();
     });
     _ageTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && _latest != null) setState(() {});
+      if (latest != null) notifyListeners();
+    });
+    notifyListeners();
+  }
+
+  /// Briefly acknowledge, then dismiss so the UI is ready for the next alert.
+  void _dismissSoon() {
+    _fadeTimer?.cancel();
+    _fadeTimer = Timer(const Duration(seconds: 2), () {
+      latest = null;
+      notifyListeners();
     });
   }
 
   /// Driver confirms the alert was a real event → positive ground truth.
-  void _confirmLatest() {
-    final e = _latest;
-    if (e == null || _latestConfirmed || _latestRejected) return;
-    unawaited(
-        widget.recorder.confirmDetectorEvent(e.ts, e.type, zScore: e.zScore));
-    setState(() => _latestConfirmed = true);
-    // Briefly acknowledge, then dismiss so the banner is ready for the next.
-    _fadeTimer?.cancel();
-    _fadeTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted) setState(() => _latest = null);
-    });
+  void confirm() {
+    final e = latest;
+    if (e == null || resolved) return;
+    unawaited(recorder.confirmDetectorEvent(e.ts, e.type, zScore: e.zScore));
+    confirmed = true;
+    _dismissSoon();
+    notifyListeners();
   }
 
   /// Driver marks the alert a false alarm → negative ground truth.
-  void _rejectLatest() {
-    final e = _latest;
-    if (e == null || _latestRejected || _latestConfirmed) return;
-    unawaited(
-        widget.recorder.rejectDetectorEvent(e.ts, e.type, zScore: e.zScore));
-    setState(() => _latestRejected = true);
-    _fadeTimer?.cancel();
-    _fadeTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted) setState(() => _latest = null);
-    });
+  void reject() {
+    final e = latest;
+    if (e == null || resolved) return;
+    unawaited(recorder.rejectDetectorEvent(e.ts, e.type, zScore: e.zScore));
+    rejected = true;
+    _dismissSoon();
+    notifyListeners();
   }
 
-  /// Driver corrects the detected type (e.g. pothole → bump). Records a negative
-  /// for the detected type + a positive for [toType] as paired ground truth.
-  void _correctLatest(String toType) {
-    final e = _latest;
-    if (e == null ||
-        _latestConfirmed ||
-        _latestRejected ||
-        _correctedTo != null) {
+  /// Driver corrects the detected type (e.g. pothole → bump). Records a
+  /// negative for the detected type + a positive for [toType] as paired ground
+  /// truth. Tapping the alert's OWN type is a confirm — the side panel always
+  /// shows all four types in fixed positions, so this is the expected path.
+  void correct(String toType) {
+    final e = latest;
+    if (e == null || resolved) return;
+    if (EventTypes.normalize(e.type) == toType) {
+      confirm();
       return;
     }
-    unawaited(widget.recorder
-        .reclassifyDetectorEvent(e.ts, e.type, toType, zScore: e.zScore));
-    setState(() => _correctedTo = toType);
-    _fadeTimer?.cancel();
-    _fadeTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted) setState(() => _latest = null);
-    });
+    unawaited(
+        recorder.reclassifyDetectorEvent(e.ts, e.type, toType, zScore: e.zScore));
+    correctedTo = toType;
+    _dismissSoon();
+    notifyListeners();
   }
+}
+
+/// Real-time alert banner: shows the latest detected event with ✓ / ✗ actions
+/// (confirm / false alarm). Type corrections moved to the right-side
+/// [_SideCorrectionPanel] (v1.3.4) — large fixed-position text buttons are
+/// glanceable while driving in a way the old icon row was not.
+class _DetectionTicker extends StatelessWidget {
+  const _DetectionTicker({required this.controller});
+  final _AlertController controller;
 
   @override
   Widget build(BuildContext context) {
-    final e = _latest;
-    if (e == null) return const SizedBox.shrink();
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        final e = controller.latest;
+        if (e == null) return const SizedBox.shrink();
 
-    final type = EventTypes.normalize(e.type);
-    final Color accent = EventUi.color(type);
-    final int ageSec = ((DateTime.now().millisecondsSinceEpoch - e.ts) / 1000)
-        .round()
-        .clamp(0, 999)
-        .toInt();
-    final String? severity = e.peakG > 0
-        ? '${e.peakG.toStringAsFixed(2)} g'
-        : (e.zScore > 0 ? 'z ${e.zScore.toStringAsFixed(1)}' : null);
+        final type = EventTypes.normalize(e.type);
+        final Color accent = EventUi.color(type);
+        final int ageSec =
+            ((DateTime.now().millisecondsSinceEpoch - e.ts) / 1000)
+                .round()
+                .clamp(0, 999)
+                .toInt();
+        final String? severity = e.peakG > 0
+            ? '${e.peakG.toStringAsFixed(2)} g'
+            : (e.zScore > 0 ? 'z ${e.zScore.toStringAsFixed(1)}' : null);
 
-    final bool resolved =
-        _latestRejected || _latestConfirmed || _correctedTo != null;
-    final String headline = _latestRejected
-        ? '${EventUi.label(type)} — false alarm'
-        : _correctedTo != null
-            ? '${EventUi.label(type)} → ${EventUi.label(_correctedTo!)}'
-            : _latestConfirmed
-                ? '${EventUi.label(type)} — confirmed'
-                : EventUi.label(type);
-    final Color? mutedColor = Theme.of(context)
-        .textTheme
-        .bodySmall
-        ?.color
-        ?.withValues(alpha: 0.7);
-    final bool showCorrections =
-        !resolved && _correctableTypes.contains(type);
+        final bool resolved = controller.resolved;
+        final String headline = controller.rejected
+            ? '${EventUi.label(type)} — false alarm'
+            : controller.correctedTo != null
+                ? '${EventUi.label(type)} → ${EventUi.label(controller.correctedTo!)}'
+                : controller.confirmed
+                    ? '${EventUi.label(type)} — confirmed'
+                    : EventUi.label(type);
+        final Color? mutedColor = Theme.of(context)
+            .textTheme
+            .bodySmall
+            ?.color
+            ?.withValues(alpha: 0.7);
 
-    return Container(
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        border: Border(
-          top: BorderSide(color: accent.withValues(alpha: 0.25), width: 0.5),
-          bottom:
-              BorderSide(color: accent.withValues(alpha: 0.25), width: 0.5),
-        ),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+        return Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            border: Border(
+              top:
+                  BorderSide(color: accent.withValues(alpha: 0.25), width: 0.5),
+              bottom:
+                  BorderSide(color: accent.withValues(alpha: 0.25), width: 0.5),
+            ),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
             children: [
               Icon(EventUi.icon(type), color: accent, size: 20),
               const SizedBox(width: 8),
@@ -1039,7 +1027,8 @@ class _DetectionTickerState extends State<_DetectionTicker> {
                               fontSize: 12),
                         ),
                       TextSpan(
-                        text: '  · ${ageSec}s ago  · #$_tripCount this trip',
+                        text:
+                            '  · ${ageSec}s ago  · #${controller.tripCount} this trip',
                         style: TextStyle(color: mutedColor, fontSize: 11),
                       ),
                     ],
@@ -1054,41 +1043,120 @@ class _DetectionTickerState extends State<_DetectionTicker> {
                   icon: Icons.check,
                   color: Colors.green,
                   tooltip: 'Confirm — this was a real event',
-                  onTap: _confirmLatest,
+                  onTap: controller.confirm,
                 ),
                 const SizedBox(width: 8),
                 _AlertActionButton(
                   icon: Icons.close,
                   color: Colors.red,
                   tooltip: 'False alarm',
-                  onTap: _rejectLatest,
+                  onTap: controller.reject,
                 ),
               ],
             ],
           ),
-          // Correction row: tap the icon of what it ACTUALLY was. Icon-only,
-          // large tap targets. Shown only for correctable impact alerts.
-          if (showCorrections)
-            Padding(
-              padding: const EdgeInsets.only(top: 8, left: 28),
-              child: Row(
-                children: [
-                  Icon(Icons.swap_horiz, size: 20, color: mutedColor),
-                  const SizedBox(width: 10),
-                  for (final t
-                      in _correctableTypes.where((t) => t != type)) ...[
-                    _AlertActionButton(
-                      icon: EventUi.icon(t),
-                      color: EventUi.color(t),
-                      tooltip: 'Correct to ${EventUi.label(t)}',
-                      onTap: () => _correctLatest(t),
-                    ),
-                    const SizedBox(width: 10),
-                  ],
-                ],
-              ),
+        );
+      },
+    );
+  }
+}
+
+/// Right-side correction panel (v1.3.4): when a correctable impact alert is
+/// live, the four type labels — Pothole, Bump, Joint, Rough Road — appear as
+/// large TEXT buttons on the right edge, ALWAYS in that order so their
+/// positions never shift between alerts. The detected type is highlighted
+/// (filled); tapping it confirms, tapping any other corrects the label. Text
+/// matches the status bar's 'Idle'/'Recording…' size (titleMedium).
+class _SideCorrectionPanel extends StatelessWidget {
+  const _SideCorrectionPanel({required this.controller});
+  final _AlertController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        final e = controller.latest;
+        if (e == null || controller.resolved) return const SizedBox.shrink();
+        final type = EventTypes.normalize(e.type);
+        if (!_AlertController.correctableTypes.contains(type)) {
+          return const SizedBox.shrink();
+        }
+        final TextStyle? base = Theme.of(context).textTheme.titleMedium;
+
+        return Positioned(
+          right: 16,
+          top: 16,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              for (final t in _AlertController.correctableTypes) ...[
+                _SideCorrectionButton(
+                  label: EventUi.label(t),
+                  color: EventUi.color(t),
+                  selected: t == type,
+                  style: base,
+                  onTap: () => controller.correct(t),
+                ),
+                const SizedBox(height: 10),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// One large text option in the side correction panel. The selected (detected)
+/// type is filled; the others are outlined on a translucent surface so the map
+/// stays readable behind them.
+class _SideCorrectionButton extends StatelessWidget {
+  const _SideCorrectionButton({
+    required this.label,
+    required this.color,
+    required this.selected,
+    required this.style,
+    required this.onTap,
+  });
+
+  final String label;
+  final Color color;
+  final bool selected;
+  final TextStyle? style;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected
+          ? color
+          : Theme.of(context).colorScheme.surface.withValues(alpha: 0.92),
+      borderRadius: BorderRadius.circular(14),
+      elevation: 3,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Container(
+          // Wide and tall — the driver is glancing, not aiming.
+          width: 156,
+          height: 52,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: color,
+              width: selected ? 0 : 1.5,
             ),
-        ],
+          ),
+          child: Text(
+            label,
+            style: style?.copyWith(
+              color: selected ? Colors.white : color,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1240,6 +1308,80 @@ class _TopRightSelectorsOverlay extends StatelessWidget {
           ],
         ),
         child: Icon(icon, color: Theme.of(context).colorScheme.onSurface),
+      ),
+    );
+  }
+}
+
+/// Left-side "Mark lane change" button shown while recording (v1.3.3).
+///
+/// The lane-change detector's MISSES are invisible without this: ground truth
+/// is otherwise only captured when an alert fires, so a manoeuvre the detector
+/// never saw could never be labelled — which is why, after the 2026-07-18
+/// drives, there were zero confirmed-real lane changes to tune against. Tapping
+/// this records positive manual ground truth (GtSource.manual, anchored ~1.4 s
+/// before the press for reaction time); offline analysis pairs it with the
+/// lc_diags telemetry to see which gate rejected the real manoeuvre.
+class _MarkLaneChangeButton extends StatefulWidget {
+  const _MarkLaneChangeButton({required this.recorder});
+  final RoadRecorder recorder;
+
+  @override
+  State<_MarkLaneChangeButton> createState() => _MarkLaneChangeButtonState();
+}
+
+class _MarkLaneChangeButtonState extends State<_MarkLaneChangeButton> {
+  bool _acked = false;
+  Timer? _ackTimer;
+
+  @override
+  void dispose() {
+    _ackTimer?.cancel();
+    super.dispose();
+  }
+
+  void _mark() {
+    if (_acked) return; // debounce while the ack flash is showing
+    unawaited(widget.recorder.markEvent(
+        DateTime.now().millisecondsSinceEpoch, EventTypes.laneChange));
+    HapticFeedback.mediumImpact();
+    setState(() => _acked = true);
+    _ackTimer?.cancel();
+    _ackTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() => _acked = false);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Color accent = EventUi.color(EventTypes.laneChange);
+    return Positioned(
+      left: 16,
+      // Mirrors the right-side stop button so both sit thumb-height above the
+      // bottom controls without overlapping the auto-center FAB.
+      bottom: 96,
+      child: Tooltip(
+        message: 'Mark lane change (detector missed one)',
+        child: SizedBox(
+          width: 64,
+          height: 64,
+          child: ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _acked ? Colors.green : accent,
+              foregroundColor: Colors.white,
+              padding: EdgeInsets.zero,
+              elevation: 4,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+            onPressed: _mark,
+            child: Icon(
+              _acked ? Icons.check : EventUi.icon(EventTypes.laneChange),
+              size: 32,
+            ),
+          ),
+        ),
       ),
     );
   }

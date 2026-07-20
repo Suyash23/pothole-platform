@@ -10,6 +10,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:pothole_finder/main.dart';
@@ -39,6 +40,116 @@ void main() {
     // Stop only exists while a recording is in progress.
     expect(find.text('Stop'), findsNothing);
   });
+
+  testWidgets(
+      'side correction panel: fixed order, titleMedium text, tap-to-correct '
+      'and tap-own-type-to-confirm', (WidgetTester tester) async {
+    final recorder = _AlertFakeRecorder();
+    await tester.pumpWidget(RoadQualityApp(recorder: recorder));
+    await tester.pump();
+
+    // Idle, no alert → no panel.
+    expect(find.widgetWithText(InkWell, 'Joint'), findsNothing);
+
+    recorder.beginFakeRecording();
+    await tester.pump();
+
+    // A pothole alert fires.
+    recorder.emit(AnomalyEvent(
+        ts: DateTime.now().millisecondsSinceEpoch,
+        type: 'pothole',
+        zScore: 3.2,
+        peakG: 0.5));
+    await tester.pump();
+    await tester.pump();
+
+    // All four options present, ALWAYS in the same top-to-bottom order.
+    const labels = ['Pothole', 'Bump', 'Joint', 'Rough Road'];
+    final ys = <double>[];
+    for (final l in labels) {
+      final f = find.widgetWithText(InkWell, l);
+      expect(f, findsOneWidget, reason: '"$l" option missing from panel');
+      ys.add(tester.getTopLeft(f).dy);
+    }
+    for (int i = 1; i < ys.length; i++) {
+      expect(ys[i], greaterThan(ys[i - 1]),
+          reason: 'panel options out of fixed order');
+    }
+
+    // Text size matches the status bar's Idle / Recording… (titleMedium).
+    final BuildContext ctx = tester.element(find.widgetWithText(InkWell, 'Joint'));
+    final Text jointText = tester.widget<Text>(find.descendant(
+        of: find.widgetWithText(InkWell, 'Joint'),
+        matching: find.text('Joint')));
+    expect(jointText.style?.fontSize,
+        Theme.of(ctx).textTheme.titleMedium?.fontSize);
+
+    // Tapping a DIFFERENT type records a pothole → joint reclassification and
+    // resolves the alert (panel hides).
+    await tester.tap(find.widgetWithText(InkWell, 'Joint'));
+    await tester.pump();
+    expect(recorder.gtCalls, contains('reclassify:pothole->concrete_joint'));
+    expect(find.widgetWithText(InkWell, 'Rough Road'), findsNothing);
+    await tester.pump(const Duration(seconds: 3)); // dismiss timer
+
+    // Next alert: tapping the alert's OWN (highlighted) type is a confirm.
+    recorder.emit(AnomalyEvent(
+        ts: DateTime.now().millisecondsSinceEpoch,
+        type: 'pothole',
+        zScore: 2.8,
+        peakG: 0.4));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.widgetWithText(InkWell, 'Pothole'));
+    await tester.pump();
+    expect(recorder.gtCalls, contains('confirm:pothole'));
+    await tester.pump(const Duration(seconds: 3)); // dismiss timer
+
+    // Unmount so the alert controller's timers are cancelled before the
+    // pending-timer check.
+    await tester.pumpWidget(const SizedBox());
+  });
+}
+
+/// [_FakeRecorder] plus a controllable alert stream and recording flag, and
+/// ground-truth writers that record their calls instead of touching sqlite.
+class _AlertFakeRecorder extends _FakeRecorder {
+  final StreamController<AnomalyEvent> _alerts =
+      StreamController<AnomalyEvent>.broadcast();
+  bool _fakeRecording = false;
+  final List<String> gtCalls = [];
+
+  @override
+  bool get isRecording => _fakeRecording;
+
+  @override
+  Stream<AnomalyEvent> get anomalyStream => _alerts.stream;
+
+  void beginFakeRecording() {
+    _fakeRecording = true;
+    notifyListeners();
+  }
+
+  void emit(AnomalyEvent e) => _alerts.add(e);
+
+  @override
+  Future<void> confirmDetectorEvent(int ts, String type,
+      {double zScore = 0.0}) async {
+    gtCalls.add('confirm:$type');
+  }
+
+  @override
+  Future<void> rejectDetectorEvent(int ts, String type,
+      {double zScore = 0.0}) async {
+    gtCalls.add('reject:$type');
+  }
+
+  @override
+  Future<void> reclassifyDetectorEvent(
+      int ts, String detectedType, String correctedType,
+      {double zScore = 0.0}) async {
+    gtCalls.add('reclassify:$detectedType->$correctedType');
+  }
 }
 
 /// Recorder whose startup side effects (sqlite reads, Firestore upload

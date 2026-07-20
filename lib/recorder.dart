@@ -226,15 +226,35 @@ class RoadRecorder extends ChangeNotifier {
       );
 
   /// Manual side-button mark. [pressTs] is the button-press time; the true event
-  /// happened ~0.3–2.5 s earlier (reaction time), so we snap the label onto the
-  /// vertical-acceleration peak within that pre-press window.
-  Future<void> markEvent(int pressTs, String type) => _recordGroundTruth(
-        ts: pressTs,
-        rawType: type,
+  /// happened ~0.3–2.5 s earlier (reaction time). Impact marks snap the label
+  /// onto the vertical-acceleration peak within that pre-press window; manoeuvre
+  /// marks (lane change / turn / braking) have no vertical signature to snap to,
+  /// so they anchor at the middle of the reaction window instead (v1.3.3 —
+  /// offline analysis pairs them with lc_diags rows by time, so ±1 s is fine).
+  Future<void> markEvent(int pressTs, String type) {
+    final canonical = EventTypes.normalize(type);
+    final bool manoeuvre = canonical == EventTypes.laneChange ||
+        canonical == EventTypes.turn ||
+        canonical == EventTypes.braking;
+    if (manoeuvre) {
+      final int shift = (DetectionConfig.markReactionMinMs +
+              DetectionConfig.markReactionMaxMs) ~/
+          2;
+      return _recordGroundTruth(
+        ts: pressTs - shift,
+        rawType: canonical,
         source: GtSource.manual,
         isFalse: false,
-        snapToPeak: true,
       );
+    }
+    return _recordGroundTruth(
+      ts: pressTs,
+      rawType: canonical,
+      source: GtSource.manual,
+      isFalse: false,
+      snapToPeak: true,
+    );
+  }
 
   /// Human corrected a detector alert's type (v1.3.1): e.g. the detector said
   /// concrete_joint but the driver knows it was a pothole. Records TWO ground
@@ -768,6 +788,7 @@ class RoadRecorder extends ChangeNotifier {
       if (fullReupload) {
         await _clearSubcollection(docRef, 'samples');
         await _clearSubcollection(docRef, 'events');
+        await _clearSubcollection(docRef, 'lc_diag');
       }
 
       // Privacy-trim the remaining (not-yet-uploaded) samples against BOTH the
@@ -812,6 +833,28 @@ class RoadRecorder extends ChangeNotifier {
         await docRef.collection('events').doc(docId).set(e.toMap());
       }
 
+      // Lane-change telemetry (v1.3.3): upload the state machine's per-candidate
+      // diagnostics as chunked batch docs, mirroring the samples layout.
+      // Deterministic doc IDs keep retries idempotent.
+      final lcDiagRows = await _db.getLcDiags(tripId);
+      var lcBatchIdx = 0;
+      var d = 0;
+      while (d < lcDiagRows.length) {
+        final end = (d + chunkSize).clamp(0, lcDiagRows.length);
+        final chunk = lcDiagRows.sublist(d, end);
+        await docRef.collection('lc_diag').doc('batch_$lcBatchIdx').set({
+          'batchIndex': lcBatchIdx,
+          'rows': [
+            for (final row in chunk)
+              Map<String, dynamic>.from(row)
+                ..remove('id')
+                ..remove('trip_id'),
+          ],
+        });
+        d = end;
+        lcBatchIdx++;
+      }
+
       // Stamp the parent doc via a MERGE set (not update): a reused doc whose
       // original init write never landed would otherwise make update() throw.
       // merge:true creates-or-updates and fills any missing metadata.
@@ -826,6 +869,7 @@ class RoadRecorder extends ChangeNotifier {
         'osVersion': osVersion,
         'sampleCount': samples.length,
         'eventCount': eventRows.length,
+        'lcDiagCount': lcDiagRows.length,
         'uploadComplete': true,
       }, SetOptions(merge: true));
 

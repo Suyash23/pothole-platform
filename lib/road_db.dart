@@ -42,6 +42,33 @@ class RoadDb {
     )
   ''';
 
+  /// Lane-change state-machine telemetry (v1.3.3). One row per candidate
+  /// manoeuvre that opened phase 1 (plus turn-vetoes), recording which gate
+  /// terminated it and every quantity the machine measured — the data needed
+  /// to tune the lane-change detector offline, since the 1–2 s uploaded GPS
+  /// samples are far too coarse to replay a 300–4000 ms state machine.
+  /// Shared between onCreate and the v15 migration.
+  static const String _createLcDiagsTableSql = '''
+    CREATE TABLE IF NOT EXISTS lc_diags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id INTEGER NOT NULL,
+      ts INTEGER NOT NULL,
+      outcome TEXT NOT NULL,
+      phase_start_ts INTEGER NOT NULL,
+      phase1_ms INTEGER DEFAULT 0,
+      crossover_ms INTEGER DEFAULT 0,
+      phase2_ms INTEGER DEFAULT 0,
+      phase1_heading_deg REAL DEFAULT 0.0,
+      phase2_heading_deg REAL DEFAULT 0.0,
+      phase1_lat_m REAL DEFAULT 0.0,
+      phase2_lat_m REAL DEFAULT 0.0,
+      peak_yaw_rads REAL DEFAULT 0.0,
+      yaw_entry_rads REAL DEFAULT 0.0,
+      speed_kmh REAL DEFAULT 0.0,
+      FOREIGN KEY (trip_id) REFERENCES trips(id)
+    )
+  ''';
+
   /// Lazy-loaded SQLite database client.
   ///
   /// Initializes the local sqlite instance on first call. 
@@ -56,7 +83,7 @@ class RoadDb {
     final dbPath = p.join(dir.path, 'road_quality.db');
     final db = await openDatabase(
       dbPath,
-      version: 14,
+      version: 15,
       onConfigure: (db) async {
         // WAL mode removed to prevent SqfliteDarwinDatabase Code=0 error on macOS
       },
@@ -177,6 +204,12 @@ class RoadDb {
         await db.execute(
           'CREATE INDEX idx_events_trip_type ON events(trip_id, type)',
         );
+
+        // Lane-change telemetry (v1.3.3).
+        await db.execute(_createLcDiagsTableSql);
+        await db.execute(
+          'CREATE INDEX idx_lc_diags_trip_ts ON lc_diags(trip_id, ts)',
+        );
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // Schema migrations
@@ -294,6 +327,13 @@ class RoadDb {
           // Stable Firestore trip-doc id so retries reuse ONE doc instead of
           // minting a fresh (often half-finalized) duplicate each attempt.
           await db.execute('ALTER TABLE trips ADD COLUMN firestore_doc_id TEXT');
+        }
+        if (oldVersion < 15) {
+          // Lane-change state-machine telemetry (v1.3.3).
+          await db.execute(_createLcDiagsTableSql);
+          await db.execute(
+            'CREATE INDEX IF NOT EXISTS idx_lc_diags_trip_ts ON lc_diags(trip_id, ts)',
+          );
         }
       },
     );
@@ -616,6 +656,17 @@ class RoadDb {
       'lon': event.lon,
       'is_false': event.isFalse ? 1 : 0,
     });
+  }
+
+  /// Returns all lane-change telemetry rows for a trip, ordered by time.
+  Future<List<Map<String, Object?>>> getLcDiags(int tripId) async {
+    final db = await database;
+    return db.query(
+      'lc_diags',
+      where: 'trip_id = ?',
+      whereArgs: [tripId],
+      orderBy: 'ts ASC',
+    );
   }
 
   /// Returns all discrete events for a trip, ordered by time.

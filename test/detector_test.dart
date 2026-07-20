@@ -352,6 +352,111 @@ void main() {
       expect(events.any((e) => e.type == EventTypes.turn), isFalse,
           reason: 'neither phase sustains long enough to be a real turn');
     });
+
+    test(
+        'speed-scaled entry (v1.3.3): very gentle 110 km/h lane change '
+        '(0.04 rad/s, below the old fixed 0.05 floor) IS detected', () {
+      // At 110 km/h the entry floor is laneChangeMinLatAccelMps2 / v ≈ 0.026,
+      // clamped to 0.03 — so a 0.04 rad/s manoeuvre now qualifies. Under the
+      // old fixed 0.05 gate this real lane change never opened phase 1, which
+      // is one half of why the 2026-07-18 drives confirmed 0 of 30 alerts.
+      final d = EventDetector();
+      int ts = _warmup(d, 100000, speed: 110);
+      final events = <DetectedEvent>[];
+      void feed(double yaw, int n) {
+        for (int i = 0; i < n; i++) {
+          events.addAll(_tick(d, ts, 0.0, yaw: yaw, speed: 110).events);
+          ts += _dtMs;
+        }
+      }
+
+      feed(0.04, 75); //  phase 1: 1.5 s → ~3.4° heading
+      feed(0.0, 25); //   crossover: 0.5 s
+      feed(-0.04, 75); // phase 2: mirror return
+      feed(0.0, 10); //   settle → confirm
+
+      expect(events.any((e) => e.type == EventTypes.laneChange), isTrue,
+          reason: 'the entry floor must scale down with speed');
+    });
+
+    test(
+        'speed-scaled entry (v1.3.3): sustained 0.05 rad/s wander at 40 km/h '
+        '(above the old fixed floor) no longer opens a candidate', () {
+      // At 40 km/h the entry floor is 0.8 / 11.1 ≈ 0.072 rad/s — city-speed
+      // lane-keeping wander at 0.05 now stays below entry instead of opening
+      // (and falsely confirming) candidates. This is the other half of the
+      // 2026-07-18 failure: 21–41 mph false alarms.
+      final d = EventDetector();
+      int ts = _warmup(d, 100000, speed: 40);
+      final events = <DetectedEvent>[];
+      final diags = <LcDiag>[];
+      void feed(double yaw, int n) {
+        for (int i = 0; i < n; i++) {
+          final r = _tick(d, ts, 0.0, yaw: yaw, speed: 40);
+          events.addAll(r.events);
+          diags.addAll(r.lcDiags);
+          ts += _dtMs;
+        }
+      }
+
+      feed(0.05, 50); // drift one way …
+      feed(0.0, 15);
+      feed(-0.05, 50); // … and correct back — an S-shape, but far too gentle
+      feed(0.0, 10);
+
+      expect(events.any((e) => e.type == EventTypes.laneChange), isFalse);
+      expect(diags, isEmpty,
+          reason: 'below the entry floor no candidate should even open');
+    });
+
+    test('telemetry (v1.3.3): confirmed lane change emits a confirm LcDiag '
+        'with a ~lane-width lateral displacement estimate', () {
+      final d = EventDetector();
+      int ts = _warmup(d, 100000, speed: 110);
+      final diags = <LcDiag>[];
+      void feed(double yaw, int n) {
+        for (int i = 0; i < n; i++) {
+          diags.addAll(_tick(d, ts, 0.0, yaw: yaw, speed: 110).lcDiags);
+          ts += _dtMs;
+        }
+      }
+
+      feed(0.04, 75); //  phase 1: 1.5 s → ~3.4° heading
+      feed(0.0, 25); //   crossover: 0.5 s
+      feed(-0.04, 75); // phase 2: mirror return
+      feed(0.0, 10); //   settle → confirm
+
+      final confirms = diags.where((g) => g.outcome == 'confirm').toList();
+      expect(confirms, hasLength(1));
+      final g = confirms.single;
+      expect(g.phase1Ms, greaterThanOrEqualTo(1400));
+      expect(g.phase2Ms, greaterThan(0));
+      expect(g.peakYawRads, closeTo(0.04, 0.005));
+      expect(g.yawEntryRads, closeTo(0.03, 0.005),
+          reason: 'the clamped speed-scaled entry floor should be recorded');
+      expect(g.netHeadingDeg.abs(), lessThan(2.0),
+          reason: 'an S-curve returns to ~the original heading');
+      expect(g.netLatM, inInclusiveRange(2.5, 5.0),
+          reason: 'a real lane change displaces the car ~a lane width (3.5 m)');
+    });
+
+    test('telemetry (v1.3.3): wander abort is recorded with its gate reason',
+        () {
+      // Strong enough to open a candidate at 120 km/h (floor ≈ 0.03) but each
+      // half-cycle integrates well under the 2° per-phase heading gate — the
+      // machine must log WHY it rejected the candidate.
+      final d = EventDetector();
+      int ts = _warmup(d, 100000, speed: 120);
+      final diags = <LcDiag>[];
+      for (int i = 0; i < 250; i++) {
+        final yaw = 0.2 * math.sin(2 * math.pi * 2 * (i * _dtMs) / 1000.0);
+        diags.addAll(_tick(d, ts, 0.0, yaw: yaw, speed: 120).lcDiags);
+        ts += _dtMs;
+      }
+      expect(diags, isNotEmpty,
+          reason: 'rejected candidates must still be logged for tuning');
+      expect(diags.any((g) => g.outcome == 'confirm'), isFalse);
+    });
   });
 
   group('Gating', () {

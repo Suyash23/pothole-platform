@@ -59,6 +59,80 @@ class DetectedEvent {
   final double speedKmh;
 }
 
+/// One terminal outcome of the lane-change state machine (v1.3.3 telemetry).
+///
+/// The machine's phases run at sensor rate (300–4000 ms), far finer than the
+/// 1–2 s samples persisted to Firestore — so the ONLY way to tune the detector
+/// offline is to record, in the app, why each candidate manoeuvre ended the
+/// way it did. One diag is emitted per candidate that opened phase 1 (plus
+/// turn-vetoes), carrying every gate quantity the machine measured. Analysis
+/// pairs these with the driver's confirm/false-alarm/manual-mark ground truth
+/// to show which gate rejects real lane changes and which admits wander.
+class LcDiag {
+  LcDiag({
+    required this.ts,
+    required this.outcome,
+    required this.phaseStartTs,
+    this.phase1Ms = 0,
+    this.crossoverMs = 0,
+    this.phase2Ms = 0,
+    this.phase1HeadingDeg = 0.0,
+    this.phase2HeadingDeg = 0.0,
+    this.phase1LatM = 0.0,
+    this.phase2LatM = 0.0,
+    this.peakYawRads = 0.0,
+    this.yawEntryRads = 0.0,
+    this.speedKmh = 0.0,
+  });
+
+  /// Sample-ts when the machine reached this terminal outcome.
+  final int ts;
+
+  /// Why the candidate ended:
+  ///   'confirm'            → lane_change event emitted
+  ///   'reject_net_heading' → S-curve completed but net heading too large (turn-ish)
+  ///   'abort_p1_timeout'   → phase 1 exceeded laneChangePhaseMaxMs
+  ///   'abort_p1_yaw_high'  → yaw exceeded laneChangeYawMaxRads in phase 1
+  ///   'abort_p1_wander'    → phase 1 ended below the per-phase heading gate
+  ///   'abort_cross_timeout'→ no direction reversal within laneChangeCrossoverMaxMs
+  ///   'abort_p2_timeout'   → phase 2 exceeded laneChangePhaseMaxMs
+  ///   'abort_p2_yaw_high'  → yaw exceeded laneChangeYawMaxRads in phase 2
+  ///   'abort_p2_wander'    → phase 2 ended below the per-phase heading gate
+  ///   'turn_veto'          → _turnConfirmed reset the machine mid-candidate
+  ///   'suppress_reset'     → sensor suppression reset the machine mid-candidate
+  final String outcome;
+
+  /// Sample-ts when phase 1 opened.
+  final int phaseStartTs;
+
+  /// Measured durations of each stage (ms; 0 when the stage was never reached).
+  final int phase1Ms;
+  final int crossoverMs;
+  final int phase2Ms;
+
+  /// Signed integrated heading of each phase (deg).
+  final double phase1HeadingDeg;
+  final double phase2HeadingDeg;
+
+  /// Signed lateral displacement estimate of each phase (m):
+  /// ∫ v·sin(integrated heading) dt. A real lane change moves ~3.5 m net;
+  /// wander <1 m — logged to validate a future displacement-based gate.
+  final double phase1LatM;
+  final double phase2LatM;
+
+  /// Largest |yaw| seen during the candidate (rad/s).
+  final double peakYawRads;
+
+  /// The speed-scaled yaw entry floor in effect when phase 1 opened (rad/s).
+  final double yawEntryRads;
+
+  /// GPS speed at the terminal tick (km/h).
+  final double speedKmh;
+
+  double get netHeadingDeg => phase1HeadingDeg + phase2HeadingDeg;
+  double get netLatM => phase1LatM + phase2LatM;
+}
+
 /// Everything the detector produces for a single accelerometer tick.
 class DetectorResult {
   DetectorResult({
@@ -67,6 +141,7 @@ class DetectorResult {
     required this.events,
     required this.laneChangeActive,
     required this.isBraking,
+    this.lcDiags = const [],
   });
 
   /// 0.75 s moving average of |vertical accel| (unchanged semantics — still used
@@ -85,6 +160,10 @@ class DetectorResult {
 
   /// Low-passed longitudinal (braking) state.
   final bool isBraking;
+
+  /// Lane-change state-machine outcomes that terminated on this tick (usually
+  /// empty). Persisted for offline tuning — see [LcDiag].
+  final List<LcDiag> lcDiags;
 }
 
 class _BumpHit {
@@ -191,6 +270,14 @@ class EventDetector {
   int _lcSuppressUntil = 0;
   int _lastLaneChangeTs = 0;
 
+  // Lane-change telemetry bookkeeping (v1.3.3) — measured quantities of the
+  // CURRENT candidate, flushed into an [LcDiag] at every terminal outcome.
+  double _lcPhase1LatM = 0.0; // ∫ v·sin(heading) dt during phase 1 + crossover (m)
+  double _lcPhase2LatM = 0.0; // ∫ v·sin(heading) dt during phase 2 (m)
+  double _lcPeakYaw = 0.0; // largest |yaw| seen during the candidate
+  double _lcEntryYawMin = 0.0; // speed-scaled entry floor at phase-1 open
+  final List<LcDiag> _lcDiags = [];
+
   /// Exposed for callers/tests that want the current baseline.
   double get mean => _mean;
   double get stdDev => _stdDev;
@@ -228,15 +315,21 @@ class EventDetector {
       _smoothedHoriz = 0.0;
       _isBraking = false;
       // Lane-change machine keeps its suppress window but resets phase state.
-      _lcInPhase1 = false;
-      _lcInCrossover = false;
-      _lcPhaseDirection = 0;
+      // v1.3.3: this previously left _lcInPhase2 set, so a suppression hit
+      // mid-phase-2 stranded the machine in a stale phase-2 with zeroed
+      // integrals; now the full phase reset runs (with a diag if a candidate
+      // was in flight).
+      if (_lcCandidateActive) {
+        _lcEmitDiag(ts, 'suppress_reset', speedKmh);
+      }
+      _resetLaneChangePhases();
       return DetectorResult(
         smoothedVert: 0.0,
         zScore: 0.0,
         events: events,
         laneChangeActive: ts < _lcSuppressUntil,
         isBraking: false,
+        lcDiags: _drainLcDiags(),
       );
     }
 
@@ -374,6 +467,7 @@ class EventDetector {
       events: events,
       laneChangeActive: laneChanging,
       isBraking: _isBraking,
+      lcDiags: _drainLcDiags(),
     );
   }
 
@@ -685,20 +779,43 @@ class EventDetector {
     // reverses direction back near zero net heading), so this interlock only
     // needs to catch turns that actually got that far.
     if (_turnConfirmed) {
+      if (_lcCandidateActive) _lcEmitDiag(ts, 'turn_veto', speedKmh);
       _resetLaneChangePhases();
       return _lcSuppressActive(ts);
     }
 
+    // v1.3.3: the entry floor is speed-scaled (constant lateral acceleration,
+    // see DetectionConfig.laneChangeMinLatAccelMps2) instead of a fixed rad/s —
+    // a 3.5 m lane change's yaw signature shrinks ∝ 1/v, so any constant either
+    // misses highway lane changes or admits city wander.
+    final double yawEntry = _lcYawEntryFloor(speedKmh);
     final double absYaw = signedYaw.abs();
-    final bool above = absYaw >= DetectionConfig.laneChangeYawMinRads &&
+    final bool above = absYaw >= yawEntry &&
         absYaw <= DetectionConfig.laneChangeYawMaxRads;
-    final bool belowCross =
-        absYaw < DetectionConfig.laneChangeYawMinRads * 0.4;
+    final bool belowCross = absYaw < yawEntry * 0.4;
     // Per-tick heading increment (deg), integrated against the previous tick's
     // timestamp so the state machine never touches the wall clock.
     final double incDt = (_lcLastTs == 0) ? 0.0 : (ts - _lcLastTs) / 1000.0;
     _lcLastTs = ts;
     final double headingInc = _degreesSafe(signedYaw, incDt);
+
+    // Telemetry: track the candidate's peak yaw and its lateral displacement
+    // estimate (∫ v·sin(total heading) dt — the physical "did the car actually
+    // move ~a lane width sideways" quantity a future gate can use).
+    if (_lcCandidateActive) {
+      if (absYaw > _lcPeakYaw) _lcPeakYaw = absYaw;
+      final double vMps = speedKmh / 3.6;
+      if (incDt > 0 && incDt <= 1.0 && vMps > 0) {
+        final double totalHeadingRad =
+            (_lcPhase1HeadingDeg + _lcPhase2HeadingDeg) * math.pi / 180.0;
+        final double latInc = vMps * math.sin(totalHeadingRad) * incDt;
+        if (_lcInPhase2) {
+          _lcPhase2LatM += latInc;
+        } else {
+          _lcPhase1LatM += latInc; // phase 1 and crossover both translate
+        }
+      }
+    }
 
     // ── PHASE 1 ────────────────────────────────────────────────────────────
     // Phase 2 must be excluded here: its opposite-direction yaw would
@@ -716,11 +833,21 @@ class EventDetector {
         _lcPhaseDirection = signedYaw > 0 ? 1 : -1;
         _lcPhase1HeadingDeg = 0.0;
         _lcPhase2HeadingDeg = 0.0;
+        _lcPhase1LatM = 0.0;
+        _lcPhase2LatM = 0.0;
+        _lcPeakYaw = absYaw;
+        _lcEntryYawMin = yawEntry;
       }
     } else if (_lcInPhase1) {
       _lcPhase1HeadingDeg += headingInc;
       if (ts - _lcPhaseStartTs > DetectionConfig.laneChangePhaseMaxMs ||
           absYaw > DetectionConfig.laneChangeYawMaxRads) {
+        _lcEmitDiag(
+            ts,
+            absYaw > DetectionConfig.laneChangeYawMaxRads
+                ? 'abort_p1_yaw_high'
+                : 'abort_p1_timeout',
+            speedKmh);
         _resetLaneChangePhases();
         return _lcSuppressActive(ts);
       }
@@ -734,6 +861,7 @@ class EventDetector {
         _lcCrossoverTs = ts;
       } else if (belowCross && phase1LongEnough && !phase1TurnedEnough) {
         // Grazed the yaw threshold but never actually turned → wander, abort.
+        _lcEmitDiag(ts, 'abort_p1_wander', speedKmh);
         _resetLaneChangePhases();
       }
     }
@@ -741,6 +869,7 @@ class EventDetector {
     // ── CROSSOVER ──────────────────────────────────────────────────────────
     if (_lcInCrossover) {
       if (ts - _lcCrossoverTs > DetectionConfig.laneChangeCrossoverMaxMs) {
+        _lcEmitDiag(ts, 'abort_cross_timeout', speedKmh);
         _resetLaneChangePhases();
         return _lcSuppressActive(ts);
       }
@@ -758,11 +887,17 @@ class EventDetector {
           ts - _lcPhase2StartTs >= DetectionConfig.laneChangePhaseMinMs;
       final bool phase2TurnedEnough = _lcPhase2HeadingDeg.abs() >=
           DetectionConfig.laneChangeMinPhaseHeadingDeg;
-      final bool phase2Ended = absYaw < DetectionConfig.laneChangeYawMinRads * 0.4;
+      final bool phase2Ended = belowCross;
       final bool phase2TooLong =
           ts - _lcPhase2StartTs > DetectionConfig.laneChangePhaseMaxMs;
 
       if (phase2TooLong || absYaw > DetectionConfig.laneChangeYawMaxRads) {
+        _lcEmitDiag(
+            ts,
+            absYaw > DetectionConfig.laneChangeYawMaxRads
+                ? 'abort_p2_yaw_high'
+                : 'abort_p2_timeout',
+            speedKmh);
         _resetLaneChangePhases();
         return _lcSuppressActive(ts);
       }
@@ -778,12 +913,18 @@ class EventDetector {
         if (isLaneChange) {
           _lcSuppressUntil = ts + DetectionConfig.laneChangeSuppressAfterMs;
           _lastLaneChangeTs = ts;
+          _lcEmitDiag(ts, 'confirm', speedKmh);
           events.add(DetectedEvent(
             ts: _lcPhaseStartTs,
             endTs: ts,
             type: EventTypes.laneChange,
             speedKmh: speedKmh,
           ));
+        } else {
+          _lcEmitDiag(
+              ts,
+              !phase2TurnedEnough ? 'abort_p2_wander' : 'reject_net_heading',
+              speedKmh);
         }
         // Whether confirmed or reclassified as a turn, the manoeuvre is over.
         _resetLaneChangePhases();
@@ -805,6 +946,60 @@ class EventDetector {
     _lcPhaseDirection = 0;
     _lcPhase1HeadingDeg = 0.0;
     _lcPhase2HeadingDeg = 0.0;
+    // Telemetry/stage bookkeeping — cleared so a later candidate's diag can
+    // never carry a previous candidate's stage timestamps or integrals.
+    _lcCrossoverTs = 0;
+    _lcPhase2StartTs = 0;
+    _lcPhase1LatM = 0.0;
+    _lcPhase2LatM = 0.0;
+    _lcPeakYaw = 0.0;
+    _lcEntryYawMin = 0.0;
+  }
+
+  bool get _lcCandidateActive => _lcInPhase1 || _lcInCrossover || _lcInPhase2;
+
+  /// Speed-scaled yaw entry floor (rad/s): constant lateral acceleration
+  /// divided by speed, clamped. See DetectionConfig.laneChangeMinLatAccelMps2.
+  double _lcYawEntryFloor(double speedKmh) {
+    final double vMps = speedKmh / 3.6;
+    if (vMps <= 0) return DetectionConfig.laneChangeYawEntryCeilRads;
+    return (DetectionConfig.laneChangeMinLatAccelMps2 / vMps).clamp(
+        DetectionConfig.laneChangeYawEntryFloorRads,
+        DetectionConfig.laneChangeYawEntryCeilRads);
+  }
+
+  /// Records the current candidate's terminal outcome. Stage durations are
+  /// derived from the stage-start timestamps; a stage that never started
+  /// reports 0, and the in-flight stage is closed at [ts].
+  void _lcEmitDiag(int ts, String outcome, double speedKmh) {
+    final int phase1Ms =
+        (_lcCrossoverTs > 0 ? _lcCrossoverTs : ts) - _lcPhaseStartTs;
+    final int crossoverMs = _lcCrossoverTs > 0
+        ? (_lcPhase2StartTs > 0 ? _lcPhase2StartTs : ts) - _lcCrossoverTs
+        : 0;
+    final int phase2Ms = _lcPhase2StartTs > 0 ? ts - _lcPhase2StartTs : 0;
+    _lcDiags.add(LcDiag(
+      ts: ts,
+      outcome: outcome,
+      phaseStartTs: _lcPhaseStartTs,
+      phase1Ms: phase1Ms,
+      crossoverMs: crossoverMs,
+      phase2Ms: phase2Ms,
+      phase1HeadingDeg: _lcPhase1HeadingDeg,
+      phase2HeadingDeg: _lcPhase2HeadingDeg,
+      phase1LatM: _lcPhase1LatM,
+      phase2LatM: _lcPhase2LatM,
+      peakYawRads: _lcPeakYaw,
+      yawEntryRads: _lcEntryYawMin,
+      speedKmh: speedKmh,
+    ));
+  }
+
+  List<LcDiag> _drainLcDiags() {
+    if (_lcDiags.isEmpty) return const [];
+    final out = List<LcDiag>.from(_lcDiags);
+    _lcDiags.clear();
+    return out;
   }
 
   double _degreesSafe(double signedYaw, double dt) {
