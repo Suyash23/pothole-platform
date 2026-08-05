@@ -1,0 +1,43 @@
+# ── Secrets — never commit ────────────────────────────────────────────────
+# inference/ talks to Firebase with a service-account key. Keep it local.
+**/firebase-credentials.json
+**/serviceAccount*.json
+**/*-credentials.json
+.env
+.env.*
+!.env.example
+
+# ── OS / editor ───────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+*.iml
+
+# ── app/ (Flutter) ────────────────────────────────────────────────────────
+app/build/
+app/.dart_tool/
+app/.flutter-plugins-dependencies
+app/ios/Pods/
+app/ios/Flutter/ephemeral/
+app/macos/Pods/
+app/macos/Flutter/ephemeral/
+app/**/flutter_*.log
+
+# Drive-analysis output produced by tools/fetch_*.py — regenerable, not source
+tools/**/*_drive_*.json
+tools/**/*_drive_*.csv
+tools/**/lc_diags_*.json
+tools/**/impulse_diags_*.json
+tools/**/drives_after_update.json
+
+# ── dashboard/ + inference/simulator-ui (node) ────────────────────────────
+node_modules/
+dist/
+*.local
+
+# ── inference/ (python) ───────────────────────────────────────────────────
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+inference/out/
+inference/uvicorn.log
