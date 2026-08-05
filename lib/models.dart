@@ -521,6 +521,20 @@ class DetectionConfig {
   static const double concreteJointMaxZ = 4.0;
 
   /// Maximum exceedance duration for a concrete joint (ms). Longer events are bumps or potholes.
+  ///
+  /// KNOWN GAP (2026-08-04). Driver-labelled joints run to 221 ms at p90
+  /// (median 70 ms), so this 100 ms cap sends the long tail of genuine joints
+  /// to NO branch at all now that the speed-scaled [potholeJointBoundary]
+  /// stops routing them to `pothole` — roughly a third of the observed
+  /// pothole→joint misroutes are longer than 100 ms and will now go silent
+  /// rather than mislabelled.
+  ///
+  /// Raising it to 250 was tried and reverted: it makes the front-axle hit of
+  /// a double-hit bump joint-eligible, so a speed bump fires a spurious joint
+  /// alert before the bump completes (caught by the v1.3.1 double-hit test).
+  /// Fixing this properly needs the joint branch to know a bump pairing is
+  /// pending — and needs the 221 ms figure confirmed against more than the 10
+  /// labelled events it currently rests on. Revisit with per-impulse telemetry.
   static const int concreteJointMaxDurationMs = 100;
 
   /// Minimum gap between consecutive concrete joint alerts (ms).
@@ -633,7 +647,51 @@ class DetectionConfig {
   /// Absolute physical gate: minimum peak vertical acceleration (g, gravity-removed)
   /// for a pothole regardless of Z-score. Prevents σ-only triggers on smooth roads
   /// where the baseline std has collapsed to [minStdDevG].
+  ///
+  /// This is the LOW-SPEED value and the fallback. The operative boundary is
+  /// speed-scaled — see [potholeJointBoundary].
   static const double potholeMinPeakG = 0.35;
+
+  /// Speed-scaled boundary (g) separating a concrete joint from a pothole.
+  /// Each row: [speedKmhLow, speedKmhHigh, peakG]. An impulse at or above the
+  /// row's value is a pothole candidate; below it (and above
+  /// [concreteJointMinPeakG]) it is a joint candidate.
+  ///
+  /// WHY THIS IS SPEED-SCALED (2026-08-04, 7 labelled drives)
+  /// -------------------------------------------------------
+  /// The boundary used to be the constant [potholeMinPeakG] = 0.35 g, which was
+  /// bisecting a SINGLE population rather than separating two. Evidence:
+  /// joint-branch peakG maxed at exactly 0.35 (n=145, median 0.24) while
+  /// pothole-branch peakG had p10 = 0.35–0.36 in EVERY speed bucket — the two
+  /// distributions met at the threshold with no gap, which is what a misplaced
+  /// cut looks like, not a class boundary.
+  ///
+  /// The consequence was the single largest error source in the app: 46 of 54
+  /// judged `rough_road` alerts and 8 of 13 judged `pothole` alerts were
+  /// relabelled `concrete_joint` by the driver. A joint at speed clears 0.35 g,
+  /// so it entered the pothole branch; the joint branch could never see it
+  /// (that branch required peakG < potholeMinPeakG); and three such "potholes"
+  /// inside [roughPatchWindowMs] then tripped the rough-patch cluster, so the
+  /// driver was shown `rough_road` for a stretch of concrete joints. 200 of 201
+  /// rough_road alerts came from that cluster path.
+  ///
+  /// Values are set ABOVE the observed joint peakG median in each bucket and
+  /// below the driver-confirmed potholes. Accuracy by bucket was 0/17 at
+  /// 60–90 km/h, 3/23 at 90–110 and 3/23 at 110+, versus ~50% below 60 km/h —
+  /// so the correction is applied from 50 km/h up and the low-speed band, where
+  /// every driver-confirmed pothole was observed (41–50 km/h, 0.38–0.44 g), is
+  /// left untouched.
+  ///
+  /// PROVISIONAL. Offline replay cannot validate these: a cluster-path
+  /// `rough_road` event does not carry the underlying impulse's jerk, duration
+  /// or rawZ, so 45 of the 55 joint labels cannot be re-run through a modified
+  /// classifier. Re-derive once per-impulse telemetry exists.
+  static const List<List<double>> potholeJointBoundary = [
+    [0, 50, 0.35], // city — driver-confirmed potholes live here; unchanged
+    [50, 70, 0.45],
+    [70, 95, 0.55],
+    [95, 9999, 0.62],
+  ];
 
   /// Absolute physical gate: minimum peak jerk (|Δg|/Δt, g per second). Potholes
   /// are sharp; this rejects slow heaves (speed bumps) that reach the same peak g.
@@ -688,6 +746,70 @@ class DetectionConfig {
   /// change is driven at ≳0.8 m/s² laterally; lane-keeping wander is well
   /// below that at city speed.
   static const double laneChangeMinLatAccelMps2 = 0.8;
+
+  // ── Yaw band-pass for the lane-change machine (v1.3.4) ─────────────────────
+  //
+  // The machine used to read the RAW gyro yaw, which carries two components
+  // that are not steering input, and both of them broke it:
+  //
+  //   • VIBRATION (high frequency). 11,231 of 12,111 candidates on the 7
+  //     drives ending 2026-08-04 died as `abort_p1_wander` with an implied
+  //     excursion duration of 25 ms against a 441 ms stage — the entry gate
+  //     was firing on ~25 ms noise spikes, opening 73 candidates a minute.
+  //   • ROAD CURVATURE (DC). On a curved road the yaw holds a sustained
+  //     non-zero mean, so the machine sees a large heading swing that has
+  //     nothing to do with changing lanes. 53 of 56 confirmed lane changes had
+  //     BOTH phases turning the same way — the signature of a curve, not an
+  //     S-curve — with net headings up to 16.8°, just under the 18° gate.
+  //
+  // A lane change lives between the two: a ~0.2–0.5 Hz S-curve. So the machine
+  // now reads a band-passed yaw — smoothed to kill vibration, minus a slow
+  // baseline to kill curvature. A lane change survives the high-pass because
+  // it is ANTISYMMETRIC: it steers out and back, so its own contribution to a
+  // slow mean is ~zero, while a curve's is the whole signal.
+  //
+  // Only the lane-change machine reads the filtered signal. Turn detection and
+  // the braking yaw gate deliberately keep the raw yaw — a turn IS sustained
+  // one-directional yaw, which is exactly what the high-pass removes.
+
+  /// Time constant (s) of the low-pass that removes gyro vibration from the
+  /// yaw before the lane-change machine sees it. Well below the 300–4000 ms
+  /// phase durations it must preserve, well above the ~25 ms noise spikes.
+  static const double laneChangeYawSmoothTauS = 0.25;
+
+  /// Time constant (s) of the slow baseline subtracted from the smoothed yaw
+  /// to remove road curvature. Long compared with a lane change (2–8 s) so the
+  /// manoeuvre passes through, short compared with a highway curve (20–60 s)
+  /// so the curve is tracked out.
+  ///
+  /// KNOWN LIMITATION — the curve-ENTRY blind window. Entering a curve is a
+  /// step in yaw, and the baseline needs ~2τ to absorb it. For roughly 10–20 s
+  /// after a curve begins, the residual keeps a phase-1 candidate open until it
+  /// hits [laneChangePhaseMaxMs] and aborts, so a lane change performed just
+  /// after turning into a curve can be MISSED. It cannot produce a false
+  /// confirm (the candidate times out rather than completing an S-curve), which
+  /// is the right way round: the 2026-08-04 dataset's problem was 53 false
+  /// confirms on curves, not missed detections.
+  ///
+  /// Shortening τ to 4–6 s closes the blind window but attenuates gentle
+  /// highway lane changes — at 110 km/h those peak at only ~0.04 rad/s against
+  /// a 0.03 entry floor, so there is very little headroom to give away. Tried
+  /// and reverted; revisit with real LcDiag data rather than synthetic signals.
+  static const double laneChangeYawBaselineTauS = 10.0;
+
+  /// Require the two S-curve phases to integrate to OPPOSITE-signed headings.
+  ///
+  /// This is the defining geometry of a lane change: steer out, then back. A
+  /// manoeuvre whose phases both turn the same way is a curve or a turn no
+  /// matter how small its net heading is — which is how 53 of 56 confirmations
+  /// on the 2026-08-04 dataset slipped through [laneChangeMaxNetHeadingDeg].
+  ///
+  /// Only meaningful now that the yaw is band-passed: on the raw signal the
+  /// phase boundaries were set by noise spikes, so the integrated sign of a
+  /// phase was not trustworthy (the one driver-CONFIRMED real lane change in
+  /// the dataset was same-signed under the old segmentation). Validate against
+  /// the next drive's LcDiag before tightening anything further.
+  static const bool laneChangeRequireOppositePhases = true;
 
   /// Lower clamp on the derived yaw entry floor (rad/s) — keeps the entry
   /// gate above the gyro noise floor at very high speed.

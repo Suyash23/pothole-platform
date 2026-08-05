@@ -65,6 +65,37 @@ class RoadDb {
       peak_yaw_rads REAL DEFAULT 0.0,
       yaw_entry_rads REAL DEFAULT 0.0,
       speed_kmh REAL DEFAULT 0.0,
+      yaw_baseline_rads REAL DEFAULT 0.0,
+      peak_yaw_raw_rads REAL DEFAULT 0.0,
+      FOREIGN KEY (trip_id) REFERENCES trips(id)
+    )
+  ''';
+
+  /// Impulse-classifier telemetry (v1.3.4). One row per exceedance that reached
+  /// [DetectionConfig.concreteJointMinPeakG], recording every quantity the
+  /// classifier branched on, the branch it took, and whether the driver
+  /// actually saw an alert. Without this the impulse thresholds cannot be tuned
+  /// offline at all: the event log only keeps impulses that emitted, and a
+  /// cluster-path `rough_road` event carries just the triggering peak g.
+  /// Shared between onCreate and the v16 migration.
+  static const String _createImpulseDiagsTableSql = '''
+    CREATE TABLE IF NOT EXISTS impulse_diags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id INTEGER NOT NULL,
+      ts INTEGER NOT NULL,
+      start_ts INTEGER NOT NULL,
+      duration_ms INTEGER DEFAULT 0,
+      branch TEXT NOT NULL,
+      emitted INTEGER DEFAULT 0,
+      suppressed_by TEXT,
+      peak_g REAL DEFAULT 0.0,
+      peak_jerk REAL DEFAULT 0.0,
+      raw_z REAL DEFAULT 0.0,
+      raw_mean REAL DEFAULT 0.0,
+      raw_std REAL DEFAULT 0.0,
+      joint_boundary_g REAL DEFAULT 0.0,
+      pothole_z_threshold REAL DEFAULT 0.0,
+      speed_kmh REAL DEFAULT 0.0,
       FOREIGN KEY (trip_id) REFERENCES trips(id)
     )
   ''';
@@ -83,7 +114,7 @@ class RoadDb {
     final dbPath = p.join(dir.path, 'road_quality.db');
     final db = await openDatabase(
       dbPath,
-      version: 15,
+      version: 16,
       onConfigure: (db) async {
         // WAL mode removed to prevent SqfliteDarwinDatabase Code=0 error on macOS
       },
@@ -210,6 +241,12 @@ class RoadDb {
         await db.execute(
           'CREATE INDEX idx_lc_diags_trip_ts ON lc_diags(trip_id, ts)',
         );
+
+        // Impulse-classifier telemetry (v1.3.4).
+        await db.execute(_createImpulseDiagsTableSql);
+        await db.execute(
+          'CREATE INDEX idx_impulse_diags_trip_ts ON impulse_diags(trip_id, ts)',
+        );
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // Schema migrations
@@ -333,6 +370,24 @@ class RoadDb {
           await db.execute(_createLcDiagsTableSql);
           await db.execute(
             'CREATE INDEX IF NOT EXISTS idx_lc_diags_trip_ts ON lc_diags(trip_id, ts)',
+          );
+        }
+        if (oldVersion < 16) {
+          // Yaw band-pass telemetry on existing lc_diags tables (v1.3.4).
+          // Guarded: a fresh v16 install already has them from the CREATE.
+          if (oldVersion >= 15) {
+            await db.execute(
+              'ALTER TABLE lc_diags ADD COLUMN yaw_baseline_rads REAL DEFAULT 0.0',
+            );
+            await db.execute(
+              'ALTER TABLE lc_diags ADD COLUMN peak_yaw_raw_rads REAL DEFAULT 0.0',
+            );
+          }
+
+          // Impulse-classifier telemetry (v1.3.4).
+          await db.execute(_createImpulseDiagsTableSql);
+          await db.execute(
+            'CREATE INDEX IF NOT EXISTS idx_impulse_diags_trip_ts ON impulse_diags(trip_id, ts)',
           );
         }
       },
@@ -663,6 +718,17 @@ class RoadDb {
     final db = await database;
     return db.query(
       'lc_diags',
+      where: 'trip_id = ?',
+      whereArgs: [tripId],
+      orderBy: 'ts ASC',
+    );
+  }
+
+  /// Returns all impulse-classifier telemetry rows for a trip, ordered by time.
+  Future<List<Map<String, Object?>>> getImpulseDiags(int tripId) async {
+    final db = await database;
+    return db.query(
+      'impulse_diags',
       where: 'trip_id = ?',
       whereArgs: [tripId],
       orderBy: 'ts ASC',

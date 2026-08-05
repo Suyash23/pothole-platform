@@ -127,6 +127,130 @@ void main() {
               'recognised as surface texture');
     });
 
+    test('same impulse → pothole in the city, concrete joint on the highway '
+        '(speed-scaled boundary, v1.3.4)', () {
+      // The 7 labelled drives ending 2026-08-04 showed the constant 0.35 g
+      // boundary was bisecting one population: joint-branch peakG maxed at
+      // exactly 0.35 while pothole-branch peakG had p10 = 0.35–0.36 in every
+      // speed bucket. 46 of 54 judged rough_road alerts were really joints.
+      // A 0.5 g sharp edge is a pothole at 40 km/h but a joint at 100 km/h.
+      const vals = [0.25, 0.5, 0.25, 0.0, 0.0, 0.0];
+
+      final city = EventDetector();
+      final cityEvents =
+          _feedVert(city, _warmup(city, 100000, speed: 40), vals, speed: 40);
+      expect(cityEvents.any((e) => e.type == EventTypes.pothole), isTrue,
+          reason: '0.5 g at 40 km/h is below the 50 km/h boundary row → pothole');
+
+      final hwy = EventDetector();
+      final hwyEvents =
+          _feedVert(hwy, _warmup(hwy, 100000, speed: 100), vals, speed: 100);
+      expect(hwyEvents.any((e) => e.type == EventTypes.pothole), isFalse,
+          reason: '0.5 g at 100 km/h is below the 0.62 g boundary → not a pothole');
+      expect(hwyEvents.any((e) => e.type == EventTypes.concreteJoint), isTrue,
+          reason: 'it should land in the joint branch, not vanish');
+    });
+
+    test('a genuinely violent impulse is still a pothole at highway speed '
+        '(v1.3.4 must not blind high-speed pothole detection)', () {
+      final d = EventDetector();
+      final ts = _warmup(d, 100000, speed: 110);
+      // 0.9 g — above the 0.62 g boundary for the 95+ km/h row.
+      final events = _feedVert(d, ts, [0.4, 0.9, 0.4, 0.0, 0.0, 0.0], speed: 110);
+      expect(events.any((e) => e.type == EventTypes.pothole), isTrue,
+          reason: 'raising the boundary must not suppress real high-speed potholes');
+    });
+
+    test('joint/pothole boundary rows meet exactly — no impulse falls through '
+        'between the two branches (v1.3.4)', () {
+      // Both branches read one boundary function, so for any speed every
+      // impulse above concreteJointMinPeakG belongs to exactly one branch.
+      for (final row in DetectionConfig.potholeJointBoundary) {
+        final b = row[2];
+        expect(b, greaterThanOrEqualTo(DetectionConfig.concreteJointMinPeakG),
+            reason: 'a boundary below the joint floor would strand impulses');
+      }
+      // Monotonic in speed: a faster impulse never needs LESS g to be a pothole.
+      for (int i = 1; i < DetectionConfig.potholeJointBoundary.length; i++) {
+        expect(DetectionConfig.potholeJointBoundary[i][2],
+            greaterThanOrEqualTo(DetectionConfig.potholeJointBoundary[i - 1][2]));
+      }
+    });
+
+    test('telemetry (v1.3.4): every classified impulse records its branch and '
+        'the thresholds it was judged against', () {
+      final d = EventDetector();
+      final ts = _warmup(d, 100000, speed: 100);
+      final diags = <ImpulseDiag>[];
+      int t = ts;
+      for (final v in [0.25, 0.5, 0.25, 0.0, 0.0, 0.0]) {
+        diags.addAll(_tick(d, t, v, speed: 100).impulseDiags);
+        t += _dtMs;
+      }
+      expect(diags.length, equals(1),
+          reason: 'one exceedance closed → exactly one diag row');
+      final row = diags.single;
+      expect(row.branch, equals('concrete_joint'),
+          reason: '0.5 g at 100 km/h is below the 0.62 g boundary');
+      expect(row.jointBoundaryG, equals(0.62),
+          reason: 'the speed-scaled boundary in effect must be recorded, so '
+              '"how far from the cut was it" is answerable offline');
+      expect(row.peakG, greaterThan(0.0));
+      expect(row.peakJerk, greaterThan(0.0));
+      expect(row.rawStd, greaterThan(0.0),
+          reason: 'the rawZ inputs are recorded so the baseline state can be '
+              'reconstructed rather than guessed');
+      expect(row.durationMs, greaterThan(0));
+      expect(row.speedKmh, equals(100));
+    });
+
+    test('telemetry (v1.3.4): an impulse that no branch claims is still '
+        'recorded — the population the event log cannot show', () {
+      final d = EventDetector();
+      final ts = _warmup(d, 100000, speed: 100);
+      final diags = <ImpulseDiag>[];
+      int t = ts;
+      // 0.5 g but SMOOTH (low jerk) and too long for a joint: fails the
+      // pothole jerk gate, the speed-bump duration window and the joint
+      // duration cap. Previously this vanished without trace.
+      final vals = <double>[
+        for (int i = 0; i <= 60; i++) 0.5 * math.sin(math.pi * i / 60),
+        0.0, 0.0, 0.0,
+      ];
+      for (final v in vals) {
+        diags.addAll(_tick(d, t, v, speed: 100).impulseDiags);
+        t += _dtMs;
+      }
+      expect(diags, isNotEmpty, reason: 'the impulse must leave a record');
+      expect(diags.single.branch, equals('none'));
+      expect(diags.single.emitted, isFalse);
+    });
+
+    test('telemetry (v1.3.4): a branch that fired but was swallowed downstream '
+        'records emitted=false with the reason', () {
+      final d = EventDetector();
+      int t = _warmup(d, 100000, speed: 50);
+      final diags = <ImpulseDiag>[];
+      // Two joints inside the 7 s joint cooldown: the first alerts, the
+      // second is claimed by the joint branch but suppressed.
+      for (int burst = 0; burst < 2; burst++) {
+        for (final v in [0.25, 0.25, 0.0, 0.0, 0.0]) {
+          diags.addAll(_tick(d, t, v, speed: 50).impulseDiags);
+          t += _dtMs;
+        }
+        for (int i = 0; i < 40; i++) {
+          diags.addAll(_tick(d, t, i.isEven ? 0.01 : -0.01, speed: 50).impulseDiags);
+          t += _dtMs;
+        }
+      }
+      expect(diags.length, equals(2));
+      expect(diags[0].emitted, isTrue);
+      expect(diags[1].branch, equals('concrete_joint'),
+          reason: 'the branch still claimed it …');
+      expect(diags[1].emitted, isFalse, reason: '… but the driver never saw it');
+      expect(diags[1].suppressedBy, equals('cooldown'));
+    });
+
     test('double-hit bump is NOT also classified as a second event (v1.3.1)', () {
       // The same physical impulse used to be recorded twice: once by the
       // double-hit bump matcher and once by the impulse classifier.
@@ -264,7 +388,8 @@ void main() {
       feed(0.25, 20); // phase 1: +yaw, 400 ms  (below the 0.3 turn threshold)
       feed(0.0, 10); //  crossover, 200 ms
       feed(-0.25, 20); // phase 2: -yaw, 400 ms
-      feed(0.0, 10); //  settle → confirm
+      feed(0.0, 40); //  settle → confirm (40 ticks: the v1.3.4 yaw band-pass
+      //                 lags phase closure by ~0.4 s)
 
       expect(events.any((e) => e.type == EventTypes.laneChange), isTrue);
       expect(events.any((e) => e.type == EventTypes.turn), isFalse);
@@ -309,7 +434,7 @@ void main() {
       feed(0.06, 50); //   phase 1: 1 s of gentle yaw → ~3.4° heading
       feed(0.0, 25); //    crossover: 0.5 s straddling the line
       feed(-0.06, 50, phase2: true); // phase 2: return to original heading
-      feed(0.0, 10); //    settle → confirm
+      feed(0.0, 40); //    settle → confirm (see band-pass lag note above)
 
       expect(events.any((e) => e.type == EventTypes.laneChange), isTrue,
           reason: 'a gentle highway lane change must be detected');
@@ -344,7 +469,7 @@ void main() {
       feed(0.45, 16); //  phase 1: 320 ms of assertive yaw → ~8.2° heading
       feed(0.0, 5); //     crossover: 100 ms straddling the line
       feed(-0.45, 16); //  phase 2: 320 ms return, mirrors phase 1
-      feed(0.0, 10); //    settle → confirm
+      feed(0.0, 40); //    settle → confirm (see band-pass lag note above)
 
       expect(events.any((e) => e.type == EventTypes.laneChange), isTrue,
           reason: 'a quick lane change whose peak yaw exceeds the turn '
@@ -373,7 +498,7 @@ void main() {
       feed(0.04, 75); //  phase 1: 1.5 s → ~3.4° heading
       feed(0.0, 25); //   crossover: 0.5 s
       feed(-0.04, 75); // phase 2: mirror return
-      feed(0.0, 10); //   settle → confirm
+      feed(0.0, 40); //   settle → confirm (see band-pass lag note above)
 
       expect(events.any((e) => e.type == EventTypes.laneChange), isTrue,
           reason: 'the entry floor must scale down with speed');
@@ -424,20 +549,103 @@ void main() {
       feed(0.04, 75); //  phase 1: 1.5 s → ~3.4° heading
       feed(0.0, 25); //   crossover: 0.5 s
       feed(-0.04, 75); // phase 2: mirror return
-      feed(0.0, 10); //   settle → confirm
+      feed(0.0, 40); //   settle → confirm (see band-pass lag note above)
 
       final confirms = diags.where((g) => g.outcome == 'confirm').toList();
       expect(confirms, hasLength(1));
       final g = confirms.single;
-      expect(g.phase1Ms, greaterThanOrEqualTo(1400));
+      // The v1.3.4 band-pass shifts the stage boundaries: phase 1 opens once
+      // the smoothed yaw climbs past the entry floor (~350 ms into a 1.5 s
+      // deflection) and closes once it decays back below the crossover floor,
+      // so the measured stage is shorter than the raw deflection it came from.
+      expect(g.phase1Ms, greaterThanOrEqualTo(1000));
       expect(g.phase2Ms, greaterThan(0));
       expect(g.peakYawRads, closeTo(0.04, 0.005));
       expect(g.yawEntryRads, closeTo(0.03, 0.005),
           reason: 'the clamped speed-scaled entry floor should be recorded');
       expect(g.netHeadingDeg.abs(), lessThan(2.0),
           reason: 'an S-curve returns to ~the original heading');
-      expect(g.netLatM, inInclusiveRange(2.5, 5.0),
+      // The v1.3.4 band-pass attenuates the integrated heading, so the lateral
+      // estimate now reads LOW against the true manoeuvre — 2.3 m here for what
+      // was ~2.9 m unfiltered. Any future displacement-based gate has to be
+      // calibrated on filtered data; the [2.0, 5.5] m band derived from the
+      // pre-filter 2026-08-04 diags does NOT transfer as-is.
+      expect(g.netLatM, inInclusiveRange(2.0, 5.0),
           reason: 'a real lane change displaces the car ~a lane width (3.5 m)');
+    });
+
+    test('a curved road is NOT a lane change, even with steering corrections '
+        'on top of it (v1.3.4)', () {
+      // The complaint this fixes: on a curve the raw yaw holds a sustained
+      // non-zero mean, so the machine saw a large heading swing that had
+      // nothing to do with changing lanes. 53 of 56 confirmations on the
+      // 2026-08-04 dataset were this — both phases turning the SAME way, net
+      // headings up to 16.8°, sneaking under the 18° gate. One swept 14.7 m.
+      final d = EventDetector();
+      int ts = _warmup(d, 100000, speed: 110);
+      final events = <DetectedEvent>[];
+      // A long right-hand curve: 0.10 rad/s held for 12 s, with ±0.03 rad/s of
+      // ordinary steering correction riding on top. Never reverses direction.
+      for (int i = 0; i < 600; i++) {
+        final yaw = 0.10 + 0.03 * math.sin(2 * math.pi * i / 60);
+        events.addAll(_tick(d, ts, 0.0, yaw: yaw, speed: 110).events);
+        ts += _dtMs;
+      }
+      expect(events.any((e) => e.type == EventTypes.laneChange), isFalse,
+          reason: 'holding a curve is not changing lanes — the yaw baseline '
+              'must absorb the curvature');
+    });
+
+    test('a real lane change performed ON a curve is still detected (v1.3.4 '
+        'removes curvature, not steering)', () {
+      // The high-pass must not throw the baby out: subtracting road curvature
+      // has to leave a genuine S-curve intact even mid-curve.
+      final d = EventDetector();
+      int ts = _warmup(d, 100000, speed: 110);
+      final events = <DetectedEvent>[];
+      void feed(double yaw, int n) {
+        for (int i = 0; i < n; i++) {
+          events.addAll(_tick(d, ts, 0.0, yaw: yaw, speed: 110).events);
+          ts += _dtMs;
+        }
+      }
+
+      // 25 s of steady curve first: the baseline needs ~2τ to absorb the step
+      // of entering the curve (see laneChangeYawBaselineTauS's known
+      // limitation). This test is about holding an ESTABLISHED curve.
+      feed(0.10, 1250); //         25 s of steady curve → baseline settles on it
+      feed(0.10 + 0.05, 75); //    phase 1: steer OUT of the curve's arc
+      feed(0.10, 25); //           crossover, back on the arc
+      feed(0.10 - 0.05, 75); //    phase 2: mirror return
+      feed(0.10, 60); //           settle → confirm
+
+      expect(events.any((e) => e.type == EventTypes.laneChange), isTrue,
+          reason: 'a real S-curve deviation from the arc is still a lane change');
+    });
+
+    test('both phases turning the same way is rejected as a curve, and the '
+        'reason is recorded (v1.3.4)', () {
+      final d = EventDetector();
+      expect(DetectionConfig.laneChangeRequireOppositePhases, isTrue,
+          reason: 'the geometry gate must be on for this test to mean anything');
+      int ts = _warmup(d, 100000, speed: 110);
+      final diags = <LcDiag>[];
+      void feed(double yaw, int n) {
+        for (int i = 0; i < n; i++) {
+          diags.addAll(_tick(d, ts, 0.0, yaw: yaw, speed: 110).lcDiags);
+          ts += _dtMs;
+        }
+      }
+
+      // A yaw excursion that dips toward zero and then resumes the SAME
+      // direction — a curve being re-entered, not an S-curve.
+      feed(0.06, 75);
+      feed(0.0, 25);
+      feed(0.06, 75);
+      feed(0.0, 40);
+
+      expect(diags.any((g) => g.outcome == 'confirm'), isFalse,
+          reason: 'same-direction phases cannot be a lane change');
     });
 
     test('telemetry (v1.3.3): wander abort is recorded with its gate reason',

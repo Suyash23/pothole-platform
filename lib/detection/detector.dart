@@ -83,6 +83,8 @@ class LcDiag {
     this.peakYawRads = 0.0,
     this.yawEntryRads = 0.0,
     this.speedKmh = 0.0,
+    this.yawBaselineRads = 0.0,
+    this.peakYawRawRads = 0.0,
   });
 
   /// Sample-ts when the machine reached this terminal outcome.
@@ -91,6 +93,7 @@ class LcDiag {
   /// Why the candidate ended:
   ///   'confirm'            → lane_change event emitted
   ///   'reject_net_heading' → S-curve completed but net heading too large (turn-ish)
+  ///   'reject_same_sign'   → both phases turned the SAME way (a curve, v1.3.4)
   ///   'abort_p1_timeout'   → phase 1 exceeded laneChangePhaseMaxMs
   ///   'abort_p1_yaw_high'  → yaw exceeded laneChangeYawMaxRads in phase 1
   ///   'abort_p1_wander'    → phase 1 ended below the per-phase heading gate
@@ -129,8 +132,96 @@ class LcDiag {
   /// GPS speed at the terminal tick (km/h).
   final double speedKmh;
 
+  /// The road-curvature baseline subtracted from the smoothed yaw at the
+  /// terminal tick (rad/s) — how much of the raw signal was the road bending
+  /// rather than the driver steering. Large values mean the candidate opened
+  /// on a curve. v1.3.4.
+  final double yawBaselineRads;
+
+  /// Largest |RAW yaw| seen during the candidate (rad/s), alongside
+  /// [peakYawRads] which is now the band-passed peak. The gap between them is
+  /// how much vibration + curvature the filter removed, so the filter itself
+  /// can be tuned from a drive instead of guessed at.
+  final double peakYawRawRads;
+
   double get netHeadingDeg => phase1HeadingDeg + phase2HeadingDeg;
   double get netLatM => phase1LatM + phase2LatM;
+}
+
+/// One impulse-classifier decision (v1.3.4 telemetry).
+///
+/// The impulse classifier could not be tuned offline AT ALL before this. The
+/// uploaded event log only records impulses that actually emitted an alert, and
+/// a cluster-path `rough_road` event carries just the triggering impulse's peak
+/// g — no jerk, duration or rawZ. On the 7 drives ending 2026-08-04 that made
+/// 45 of the 55 driver-labelled concrete joints impossible to replay through a
+/// modified classifier, so the speed-scaled [DetectionConfig.potholeJointBoundary]
+/// had to ship on unvalidated numbers.
+///
+/// One row is recorded per exceedance that reaches
+/// [DetectionConfig.concreteJointMinPeakG] — the weakest branch's absolute floor,
+/// below which no branch can classify anything, so lower peaks carry no tuning
+/// information. Every quantity the classifier branched on is captured, plus the
+/// branch taken and whether the driver actually saw an alert, so any proposed
+/// threshold can be re-scored offline against the driver's labels.
+class ImpulseDiag {
+  ImpulseDiag({
+    required this.ts,
+    required this.startTs,
+    required this.durationMs,
+    required this.branch,
+    required this.emitted,
+    this.suppressedBy = '',
+    this.peakG = 0.0,
+    this.peakJerk = 0.0,
+    this.rawZ = 0.0,
+    this.rawMean = 0.0,
+    this.rawStd = 0.0,
+    this.jointBoundaryG = 0.0,
+    this.potholeZThreshold = 0.0,
+    this.speedKmh = 0.0,
+  });
+
+  /// Sample-ts at which the exceedance closed (the classification instant).
+  final int ts;
+
+  /// Sample-ts at which the exceedance opened.
+  final int startTs;
+
+  /// Length of the exceedance (ms).
+  final int durationMs;
+
+  /// Which branch claimed it:
+  ///   'pothole' | 'speed_bump' | 'concrete_joint' | 'bump' | 'none'
+  /// 'none' means it cleared the recording floor but no branch's gates —
+  /// the population that was previously invisible to analysis.
+  final String branch;
+
+  /// Whether an alert actually reached the driver. False when a branch claimed
+  /// the impulse but something downstream swallowed it — see [suppressedBy].
+  final bool emitted;
+
+  /// Why nothing was shown despite a branch claiming it:
+  ///   'cooldown' | 'storm' | 'rough_patch' | 'lane_change' | '' (not suppressed)
+  final String suppressedBy;
+
+  /// The physical features the branches gated on.
+  final double peakG;
+  final double peakJerk;
+
+  /// The relative gate: (peakG - rawMean) / rawStd, with its inputs recorded so
+  /// the baseline state can be reconstructed rather than guessed at.
+  final double rawZ;
+  final double rawMean;
+  final double rawStd;
+
+  /// The speed-scaled thresholds in effect for THIS impulse — the boundary
+  /// between joint and pothole, and the pothole's rawZ bar for the speed
+  /// bucket. Recording them makes "how far from the cut was it" answerable.
+  final double jointBoundaryG;
+  final double potholeZThreshold;
+
+  final double speedKmh;
 }
 
 /// Everything the detector produces for a single accelerometer tick.
@@ -142,6 +233,7 @@ class DetectorResult {
     required this.laneChangeActive,
     required this.isBraking,
     this.lcDiags = const [],
+    this.impulseDiags = const [],
   });
 
   /// 0.75 s moving average of |vertical accel| (unchanged semantics — still used
@@ -164,6 +256,11 @@ class DetectorResult {
   /// Lane-change state-machine outcomes that terminated on this tick (usually
   /// empty). Persisted for offline tuning — see [LcDiag].
   final List<LcDiag> lcDiags;
+
+  /// Impulse-classifier decisions made on this tick (usually empty — at most
+  /// one, when an exceedance closed). Persisted for offline tuning of the
+  /// pothole / joint / speed-bump thresholds — see [ImpulseDiag].
+  final List<ImpulseDiag> impulseDiags;
 }
 
 class _BumpHit {
@@ -237,6 +334,14 @@ class EventDetector {
   /// threshold clears it immediately.
   bool _turnConfirmed = false;
 
+  // ── Yaw band-pass feeding the lane-change machine (v1.3.4) ─────────────────
+  // _yawSmoothed removes vibration; _yawBaseline tracks road curvature. Their
+  // difference is the steering-band signal the S-curve machine reads. See
+  // DetectionConfig.laneChangeYawSmoothTauS / laneChangeYawBaselineTauS.
+  double _yawSmoothed = 0.0;
+  double _yawBaseline = 0.0;
+  int _lastYawTs = 0;
+
   // ── Braking low-pass (longitudinal) ────────────────────────────────────────
   double _smoothedHoriz = 0.0;
   int _lastHorizTs = 0;
@@ -256,7 +361,7 @@ class EventDetector {
 
   // ── Concrete-joint storm guard (v1.3.1) ────────────────────────────────────
   // Timestamps of recent joint CANDIDATES (gates passed, before cooldown). If
-  // too many arrive in a short window the surface is textured, not jointed.
+  // too many arrive in a short window the surface is jointed concrete.
   final Queue<int> _jointCandidateTs = Queue<int>();
 
   // ── Lane change (heading-integrated S-curve) ───────────────────────────────
@@ -274,9 +379,14 @@ class EventDetector {
   // CURRENT candidate, flushed into an [LcDiag] at every terminal outcome.
   double _lcPhase1LatM = 0.0; // ∫ v·sin(heading) dt during phase 1 + crossover (m)
   double _lcPhase2LatM = 0.0; // ∫ v·sin(heading) dt during phase 2 (m)
-  double _lcPeakYaw = 0.0; // largest |yaw| seen during the candidate
+  double _lcPeakYaw = 0.0; // largest |band-passed yaw| during the candidate
+  double _lcPeakYawRaw = 0.0; // largest |RAW yaw| during the candidate (v1.3.4)
   double _lcEntryYawMin = 0.0; // speed-scaled entry floor at phase-1 open
   final List<LcDiag> _lcDiags = [];
+
+  // Impulse-classifier telemetry (v1.3.4) — one row per classified exceedance,
+  // drained into the DetectorResult on the tick it closed. See [ImpulseDiag].
+  final List<ImpulseDiag> _impulseDiags = [];
 
   /// Exposed for callers/tests that want the current baseline.
   double get mean => _mean;
@@ -310,6 +420,7 @@ class EventDetector {
       _recentBumpHits.clear();
       _impactClusterTs.clear();
       _roughPatchActiveUntil = 0;
+      _jointCandidateTs.clear();
       _exSince = 0;
       _exPeakZ = _exPeakG = _exPeakJerk = 0.0;
       _smoothedHoriz = 0.0;
@@ -330,6 +441,7 @@ class EventDetector {
         laneChangeActive: ts < _lcSuppressUntil,
         isBraking: false,
         lcDiags: _drainLcDiags(),
+        impulseDiags: _drainImpulseDiags(),
       );
     }
 
@@ -377,8 +489,11 @@ class EventDetector {
     _lastHorizTs = ts;
 
     // 4. Lane change (always evaluated so it can suppress defect alerts).
+    //    v1.3.4: reads the BAND-PASSED yaw — vibration and road curvature
+    //    removed — while the turn detector below keeps the raw signal.
+    final double lcYaw = _bandPassYaw(ts, signedYaw);
     final bool laneChanging =
-        _updateLaneChange(ts, signedYaw, speedKmh, events);
+        _updateLaneChange(ts, lcYaw, speedKmh, events, rawYaw: signedYaw);
 
     if (!stationary) {
       // 4b. Sudden braking — emit on the low-passed longitudinal state, rate-limited.
@@ -459,6 +574,7 @@ class EventDetector {
       _exPeakZ = _exPeakG = _exPeakJerk = 0.0;
       _impactClusterTs.clear();
       _roughPatchActiveUntil = 0;
+      _jointCandidateTs.clear();
     }
 
     return DetectorResult(
@@ -468,11 +584,67 @@ class EventDetector {
       laneChangeActive: laneChanging,
       isBraking: _isBraking,
       lcDiags: _drainLcDiags(),
+      impulseDiags: _drainImpulseDiags(),
     );
   }
 
   // ── Impulse classification ─────────────────────────────────────────────────
   void _classifyImpulse({
+    required int endTs,
+    required int startTs,
+    required int duration,
+    required double peakZ,
+    required double peakG,
+    required double peakJerk,
+    required double speedKmh,
+    required bool laneChanging,
+    required List<DetectedEvent> events,
+  }) {
+    // v1.3.4: the classification runs in _classifyImpulseBranch and reports
+    // which branch claimed the impulse and whether the driver actually saw it;
+    // this wrapper turns that into one [ImpulseDiag]. Keeping the recording
+    // OUTSIDE the branch logic means a future branch cannot forget to log
+    // itself — every path through the classifier produces exactly one row.
+    final double rawZForDiag =
+        _rawStd > 0 ? (peakG - _rawMean) / _rawStd : 0.0;
+    final outcome = _classifyImpulseBranch(
+      endTs: endTs,
+      startTs: startTs,
+      duration: duration,
+      peakZ: peakZ,
+      peakG: peakG,
+      peakJerk: peakJerk,
+      speedKmh: speedKmh,
+      laneChanging: laneChanging,
+      events: events,
+    );
+
+    // Only record impulses that could have been classified at all: below the
+    // weakest branch's absolute floor no branch can fire, so those rows would
+    // be pure volume with no tuning value.
+    if (peakG >= DetectionConfig.concreteJointMinPeakG) {
+      _impulseDiags.add(ImpulseDiag(
+        ts: endTs,
+        startTs: startTs,
+        durationMs: duration,
+        branch: outcome.branch,
+        emitted: outcome.emitted,
+        suppressedBy: outcome.suppressedBy,
+        peakG: peakG,
+        peakJerk: peakJerk,
+        rawZ: rawZForDiag,
+        rawMean: _rawMean,
+        rawStd: _rawStd,
+        jointBoundaryG: _potholeJointBoundaryForSpeed(speedKmh),
+        potholeZThreshold: _potholeThresholdForSpeed(speedKmh),
+        speedKmh: speedKmh,
+      ));
+    }
+  }
+
+  /// The classification itself. Returns which branch claimed the impulse and
+  /// whether an alert reached the driver, for [ImpulseDiag].
+  ({String branch, bool emitted, String suppressedBy}) _classifyImpulseBranch({
     required int endTs,
     required int startTs,
     required int duration,
@@ -503,28 +675,37 @@ class EventDetector {
       if (bump != null) {
         final bool inPatch = _registerImpact(endTs, bump.peakG, speedKmh, events);
         if (!inPatch) events.add(bump);
-        return;
+        return (
+          branch: 'bump',
+          emitted: !inPatch,
+          suppressedBy: inPatch ? 'rough_patch' : '',
+        );
       }
     }
 
-    if (laneChanging) return; // raised markers mimic defects — suppress.
+    if (laneChanging) {
+      // raised markers mimic defects — suppress.
+      return (branch: 'none', emitted: false, suppressedBy: 'lane_change');
+    }
 
     // Relative gate against the RAW baseline: how extreme is this peak vs. how
     // rough the road has recently been. Combined in series with absolute gates.
     final double rawZ =
         _rawStd > 0 ? (peakG - _rawMean) / _rawStd : 0.0;
     final double potholeZ = _potholeThresholdForSpeed(speedKmh);
+    // Speed-scaled pothole/joint split (v1.3.4). Shared by both branches below.
+    final double jointBoundaryG = _potholeJointBoundaryForSpeed(speedKmh);
 
     // 1. Pothole — sharp AND strong: absolute peak g + jerk, plus relative rawZ.
-    if (peakG >= DetectionConfig.potholeMinPeakG &&
+    if (peakG >= jointBoundaryG &&
         peakJerk >= DetectionConfig.potholeMinJerk &&
         rawZ >= potholeZ) {
       // Feed the rough-patch cluster; if a patch is active the single rough_road
       // alert stands in for this pothole and the individual ping is suppressed.
       final bool inPatch = _registerImpact(endTs, peakG, speedKmh, events);
-      if (!inPatch &&
-          (_lastPotholeTs == 0 ||
-              endTs - _lastPotholeTs >= DetectionConfig.potholeCooldownMs)) {
+      final bool coolokay = _lastPotholeTs == 0 ||
+          endTs - _lastPotholeTs >= DetectionConfig.potholeCooldownMs;
+      if (!inPatch && coolokay) {
         _lastPotholeTs = endTs;
         events.add(DetectedEvent(
           ts: startTs,
@@ -536,7 +717,11 @@ class EventDetector {
           speedKmh: speedKmh,
         ));
       }
-      return; // classified
+      return (
+        branch: 'pothole',
+        emitted: !inPatch && coolokay,
+        suppressedBy: inPatch ? 'rough_patch' : (coolokay ? '' : 'cooldown'),
+      ); // classified
     }
 
     // 2. Speed bump — smooth heave: reaches amplitude but LOW jerk, and lasts.
@@ -545,9 +730,9 @@ class EventDetector {
         duration >= DetectionConfig.speedBumpMinDurationMs &&
         duration <= DetectionConfig.speedBumpMaxDurationMs) {
       final bool inPatch = _registerImpact(endTs, peakG, speedKmh, events);
-      if (!inPatch &&
-          (_lastSpeedBumpTs == 0 ||
-              endTs - _lastSpeedBumpTs >= DetectionConfig.speedBumpCooldownMs)) {
+      final bool coolokay = _lastSpeedBumpTs == 0 ||
+          endTs - _lastSpeedBumpTs >= DetectionConfig.speedBumpCooldownMs;
+      if (!inPatch && coolokay) {
         _lastSpeedBumpTs = endTs;
         events.add(DetectedEvent(
           ts: startTs,
@@ -559,7 +744,11 @@ class EventDetector {
           speedKmh: speedKmh,
         ));
       }
-      return;
+      return (
+        branch: 'speed_bump',
+        emitted: !inPatch && coolokay,
+        suppressedBy: inPatch ? 'rough_patch' : (coolokay ? '' : 'cooldown'),
+      );
     }
 
     // 3. Concrete joint — brief, small, but a SHARP edge (needs some jerk).
@@ -573,7 +762,7 @@ class EventDetector {
     //   • a storm guard — many qualifying joints per window means the surface
     //     is rough, which is the sustained rough-road detector's job.
     if (peakG >= DetectionConfig.concreteJointMinPeakG &&
-        peakG < DetectionConfig.potholeMinPeakG &&
+        peakG < jointBoundaryG &&
         peakJerk >= DetectionConfig.concreteJointMinJerk &&
         rawZ >= DetectionConfig.concreteJointMinRawZ &&
         duration <= DetectionConfig.concreteJointMaxDurationMs) {
@@ -585,10 +774,25 @@ class EventDetector {
       }
       final bool storm =
           _jointCandidateTs.length >= DetectionConfig.concreteJointStormCount;
-      if (!storm &&
-          (_lastConcreteJointTs == 0 ||
-              endTs - _lastConcreteJointTs >=
-                  DetectionConfig.concreteJointCooldownMs)) {
+
+      // The storm guard stays as-is: the FIRST candidate of a jointed stretch
+      // already emits below (nothing has stormed yet), and every candidate
+      // after it is silenced — so the guard is already "one aggregated alert
+      // per stretch". What changed in v1.3.4 is upstream: the speed-scaled
+      // [potholeJointBoundary] stops these impulses being stolen by the
+      // pothole branch, which is what used to trip the rough-patch cluster and
+      // mislabel the stretch `rough_road` (46 of 54 judged rough_road alerts
+      // were relabelled concrete_joint by the driver).
+      //
+      // Consequence to watch on the next drive: a LONG jointed stretch now
+      // yields one joint alert and then quiet, where it previously produced a
+      // wrong `rough_road` every 10 s. That is the intended trade (correct and
+      // quiet over frequent and wrong), but it does mean sustained jointed
+      // concrete is now nearly silent after its opening alert.
+      final bool coolokay = _lastConcreteJointTs == 0 ||
+          endTs - _lastConcreteJointTs >=
+              DetectionConfig.concreteJointCooldownMs;
+      if (!storm && coolokay) {
         _lastConcreteJointTs = endTs;
         events.add(DetectedEvent(
           ts: startTs,
@@ -600,7 +804,17 @@ class EventDetector {
           speedKmh: speedKmh,
         ));
       }
+      return (
+        branch: 'concrete_joint',
+        emitted: !storm && coolokay,
+        suppressedBy: storm ? 'storm' : (coolokay ? '' : 'cooldown'),
+      );
     }
+
+    // Cleared the recording floor but no branch's gates — the population that
+    // was invisible before v1.3.4. A growing share here means the thresholds
+    // have drifted apart and real events are falling between the branches.
+    return (branch: 'none', emitted: false, suppressedBy: '');
   }
 
   /// Returns the [EventTypes.bump] event when this hit completes a double-hit
@@ -700,6 +914,17 @@ class EventDetector {
     return DetectionConfig.potholeFallbackThreshold;
   }
 
+  /// Speed-scaled peak-g boundary between a concrete joint and a pothole.
+  /// Both branches read this ONE function so the two ranges always meet
+  /// exactly — no gap that silently drops impulses, no overlap that lets the
+  /// branch order decide the label. See [DetectionConfig.potholeJointBoundary].
+  double _potholeJointBoundaryForSpeed(double speedKmh) {
+    for (final row in DetectionConfig.potholeJointBoundary) {
+      if (speedKmh >= row[0] && speedKmh < row[1]) return row[2];
+    }
+    return DetectionConfig.potholeMinPeakG;
+  }
+
   // ── Turn ───────────────────────────────────────────────────────────────────
   void _updateTurn(int ts, double signedYaw, double zScore, double speedKmh,
       List<DetectedEvent> events) {
@@ -759,8 +984,9 @@ class EventDetector {
   bool _lcSuppressActive(int ts) =>
       _lcInCrossover || _lcInPhase2 || ts < _lcSuppressUntil;
 
-  bool _updateLaneChange(
-      int ts, double signedYaw, double speedKmh, List<DetectedEvent> events) {
+  bool _updateLaneChange(int ts, double signedYaw, double speedKmh,
+      List<DetectedEvent> events,
+      {double rawYaw = 0.0}) {
     // A CONFIRMED turn cannot also be a lane change. Gated on [_turnConfirmed]
     // — the turn detector's own confirmation bar (turnMinDurationMs sustained
     // in ONE direction, no grace period) — NOT merely "yaw exceeded the turn
@@ -804,6 +1030,7 @@ class EventDetector {
     // move ~a lane width sideways" quantity a future gate can use).
     if (_lcCandidateActive) {
       if (absYaw > _lcPeakYaw) _lcPeakYaw = absYaw;
+      if (rawYaw.abs() > _lcPeakYawRaw) _lcPeakYawRaw = rawYaw.abs();
       final double vMps = speedKmh / 3.6;
       if (incDt > 0 && incDt <= 1.0 && vMps > 0) {
         final double totalHeadingRad =
@@ -836,6 +1063,7 @@ class EventDetector {
         _lcPhase1LatM = 0.0;
         _lcPhase2LatM = 0.0;
         _lcPeakYaw = absYaw;
+        _lcPeakYawRaw = rawYaw.abs();
         _lcEntryYawMin = yawEntry;
       }
     } else if (_lcInPhase1) {
@@ -908,7 +1136,16 @@ class EventDetector {
       if (phase2Ended && phase2LongEnough) {
         final double netHeading =
             (_lcPhase1HeadingDeg + _lcPhase2HeadingDeg).abs();
+        // v1.3.4: the two phases must integrate to OPPOSITE signs — steer out,
+        // then back. Both turning the same way is a curve or a turn however
+        // small the net heading looks, which is how 53 of 56 confirmations on
+        // the 2026-08-04 dataset passed the net-heading gate (medians: 6.1°
+        // net heading, 1.6 m lateral, one as far as 14.7 m).
+        final bool phasesOppose =
+            !DetectionConfig.laneChangeRequireOppositePhases ||
+                (_lcPhase1HeadingDeg * _lcPhase2HeadingDeg < 0);
         final bool isLaneChange = bothPhasesOk &&
+            phasesOppose &&
             netHeading <= DetectionConfig.laneChangeMaxNetHeadingDeg;
         if (isLaneChange) {
           _lcSuppressUntil = ts + DetectionConfig.laneChangeSuppressAfterMs;
@@ -923,7 +1160,9 @@ class EventDetector {
         } else {
           _lcEmitDiag(
               ts,
-              !phase2TurnedEnough ? 'abort_p2_wander' : 'reject_net_heading',
+              !phase2TurnedEnough
+                  ? 'abort_p2_wander'
+                  : (!phasesOppose ? 'reject_same_sign' : 'reject_net_heading'),
               speedKmh);
         }
         // Whether confirmed or reclassified as a turn, the manoeuvre is over.
@@ -953,10 +1192,44 @@ class EventDetector {
     _lcPhase1LatM = 0.0;
     _lcPhase2LatM = 0.0;
     _lcPeakYaw = 0.0;
+    _lcPeakYawRaw = 0.0;
     _lcEntryYawMin = 0.0;
   }
 
   bool get _lcCandidateActive => _lcInPhase1 || _lcInCrossover || _lcInPhase2;
+
+  /// Band-passes the raw gyro yaw for the lane-change machine: a fast low-pass
+  /// strips vibration, and subtracting a slow baseline strips road curvature.
+  /// What is left is the steering band a lane change lives in.
+  ///
+  /// A lane change survives the high-pass because it is antisymmetric — it
+  /// steers out and back, contributing ~nothing to a slow mean — whereas a
+  /// curve's sustained yaw IS the slow mean and cancels itself out.
+  double _bandPassYaw(int ts, double signedYaw) {
+    if (_lastYawTs == 0) {
+      // Seed both filters at the first sample so the machine does not see a
+      // spurious step while they charge from zero.
+      _yawSmoothed = signedYaw;
+      _yawBaseline = signedYaw;
+      _lastYawTs = ts;
+      return 0.0;
+    }
+    final double dt = (ts - _lastYawTs) / 1000.0;
+    _lastYawTs = ts;
+    // Ignore absurd gaps (backgrounding, sensor stalls) rather than letting a
+    // huge dt collapse both filters onto the current sample.
+    if (dt <= 0 || dt > 1.0) return _yawSmoothed - _yawBaseline;
+
+    final double aFast =
+        math.exp(-dt / DetectionConfig.laneChangeYawSmoothTauS);
+    _yawSmoothed = _yawSmoothed * aFast + signedYaw * (1.0 - aFast);
+
+    final double aSlow =
+        math.exp(-dt / DetectionConfig.laneChangeYawBaselineTauS);
+    _yawBaseline = _yawBaseline * aSlow + signedYaw * (1.0 - aSlow);
+
+    return _yawSmoothed - _yawBaseline;
+  }
 
   /// Speed-scaled yaw entry floor (rad/s): constant lateral acceleration
   /// divided by speed, clamped. See DetectionConfig.laneChangeMinLatAccelMps2.
@@ -992,7 +1265,16 @@ class EventDetector {
       peakYawRads: _lcPeakYaw,
       yawEntryRads: _lcEntryYawMin,
       speedKmh: speedKmh,
+      yawBaselineRads: _yawBaseline,
+      peakYawRawRads: _lcPeakYawRaw,
     ));
+  }
+
+  List<ImpulseDiag> _drainImpulseDiags() {
+    if (_impulseDiags.isEmpty) return const [];
+    final out = List<ImpulseDiag>.from(_impulseDiags);
+    _impulseDiags.clear();
+    return out;
   }
 
   List<LcDiag> _drainLcDiags() {

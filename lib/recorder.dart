@@ -789,6 +789,7 @@ class RoadRecorder extends ChangeNotifier {
         await _clearSubcollection(docRef, 'samples');
         await _clearSubcollection(docRef, 'events');
         await _clearSubcollection(docRef, 'lc_diag');
+        await _clearSubcollection(docRef, 'impulse_diag');
       }
 
       // Privacy-trim the remaining (not-yet-uploaded) samples against BOTH the
@@ -855,6 +856,30 @@ class RoadRecorder extends ChangeNotifier {
         lcBatchIdx++;
       }
 
+      // Impulse-classifier telemetry (v1.3.4): same chunked-batch layout as
+      // lc_diag. This is what makes the pothole / joint / speed-bump
+      // thresholds tunable offline — the event log alone cannot show impulses
+      // that were classified but never alerted, nor the features of the ones
+      // that a rough-patch cluster swallowed.
+      final impulseDiagRows = await _db.getImpulseDiags(tripId);
+      var impBatchIdx = 0;
+      var imp = 0;
+      while (imp < impulseDiagRows.length) {
+        final end = (imp + chunkSize).clamp(0, impulseDiagRows.length);
+        final chunk = impulseDiagRows.sublist(imp, end);
+        await docRef.collection('impulse_diag').doc('batch_$impBatchIdx').set({
+          'batchIndex': impBatchIdx,
+          'rows': [
+            for (final row in chunk)
+              Map<String, dynamic>.from(row)
+                ..remove('id')
+                ..remove('trip_id'),
+          ],
+        });
+        imp = end;
+        impBatchIdx++;
+      }
+
       // Stamp the parent doc via a MERGE set (not update): a reused doc whose
       // original init write never landed would otherwise make update() throw.
       // merge:true creates-or-updates and fills any missing metadata.
@@ -870,6 +895,7 @@ class RoadRecorder extends ChangeNotifier {
         'sampleCount': samples.length,
         'eventCount': eventRows.length,
         'lcDiagCount': lcDiagRows.length,
+        'impulseDiagCount': impulseDiagRows.length,
         'uploadComplete': true,
       }, SetOptions(merge: true));
 

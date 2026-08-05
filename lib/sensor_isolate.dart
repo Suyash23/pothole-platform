@@ -90,6 +90,7 @@ class SensorProcessor {
   final List<Map<String, dynamic>> _gpsBatch = [];
   final List<Map<String, dynamic>> _accelBatch = [];
   final List<Map<String, dynamic>> _lcDiagBatch = [];
+  final List<Map<String, dynamic>> _impulseDiagBatch = [];
 
   // Sensors
   StreamSubscription<AccelerometerEvent>? _accelSub;
@@ -296,6 +297,31 @@ class SensorProcessor {
             'peak_yaw_rads': d.peakYawRads,
             'yaw_entry_rads': d.yawEntryRads,
             'speed_kmh': d.speedKmh,
+            'yaw_baseline_rads': d.yawBaselineRads,
+            'peak_yaw_raw_rads': d.peakYawRawRads,
+          });
+        }
+
+        // Impulse-classifier telemetry → SQLite (v1.3.4). One row per
+        // exceedance that could have been classified, whether or not it
+        // alerted — the population the event log cannot show.
+        for (final d in result.impulseDiags) {
+          _impulseDiagBatch.add({
+            'trip_id': tripId,
+            'ts': d.ts,
+            'start_ts': d.startTs,
+            'duration_ms': d.durationMs,
+            'branch': d.branch,
+            'emitted': d.emitted ? 1 : 0,
+            'suppressed_by': d.suppressedBy,
+            'peak_g': d.peakG,
+            'peak_jerk': d.peakJerk,
+            'raw_z': d.rawZ,
+            'raw_mean': d.rawMean,
+            'raw_std': d.rawStd,
+            'joint_boundary_g': d.jointBoundaryG,
+            'pothole_z_threshold': d.potholeZThreshold,
+            'speed_kmh': d.speedKmh,
           });
         }
 
@@ -476,7 +502,10 @@ class SensorProcessor {
   }
 
   Future<void> _flushBatch() async {
-    if (_gpsBatch.isEmpty && _accelBatch.isEmpty && _lcDiagBatch.isEmpty) {
+    if (_gpsBatch.isEmpty &&
+        _accelBatch.isEmpty &&
+        _lcDiagBatch.isEmpty &&
+        _impulseDiagBatch.isEmpty) {
       return;
     }
 
@@ -492,10 +521,14 @@ class SensorProcessor {
     for (final d in _lcDiagBatch) {
       batch.insert('lc_diags', d);
     }
+    for (final d in _impulseDiagBatch) {
+      batch.insert('impulse_diags', d);
+    }
 
     _gpsBatch.clear();
     _accelBatch.clear();
     _lcDiagBatch.clear();
+    _impulseDiagBatch.clear();
 
     await batch.commit(noResult: true);
   }
