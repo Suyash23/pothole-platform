@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""
+Pull TODAY's drive(s) from Firestore and save + summarize them.
+
+Run locally (needs internet):
+    pip install requests
+    python3 fetch_todays_drive.py
+
+Outputs (in current dir):
+    todays_drive_YYYY-MM-DD.json   raw trip document(s) recorded today
+    todays_drive_summary.txt       human-readable per-trip summary
+
+Reuses the analysis helpers from fetch_firebase_analysis.py (same folder).
+"""
+
+import json
+import sys
+from datetime import datetime
+
+try:
+    import requests
+except ImportError:
+    print("ERROR: 'requests' not installed. Run:  pip install requests")
+    sys.exit(1)
+
+from fetch_firebase_analysis import (
+    PROJECT_ID, API_KEY, BASE_URL,
+    doc_to_dict, analyse_trip, aggregate_analysis,
+    fetch_samples_subcollection,
+)
+
+
+def fetch_all_trips():
+    trips = []
+    token = None
+    while True:
+        url = f"{BASE_URL}/trips?key={API_KEY}&pageSize=50"
+        if token:
+            url += f"&pageToken={token}"
+        r = requests.get(url, timeout=30)
+        if r.status_code != 200:
+            print(f"ERROR {r.status_code}: {r.text[:200]}")
+            sys.exit(1)
+        data = r.json()
+        for doc in data.get("documents", []):
+            d = doc_to_dict(doc)
+            d["_doc_name"] = doc.get("name", "")
+            trips.append(d)
+        token = data.get("nextPageToken")
+        if not token:
+            break
+    return trips
+
+
+def local_date(ms):
+    """Convert epoch-ms to a local date string (uses machine timezone)."""
+    try:
+        return datetime.fromtimestamp(int(ms) / 1000).strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def main():
+    today = datetime.now().strftime("%Y-%m-%d")
+    print(f"Fetching trips from Firestore … (today = {today}, local time)")
+    trips = fetch_all_trips()
+    print(f"Fetched {len(trips)} total trip(s).")
+
+    todays = [t for t in trips if local_date(t.get("startTimeMs")) == today]
+    print(f"Trips recorded today: {len(todays)}")
+
+    # Samples live in the trips/{id}/samples subcollection, not on the trip doc.
+    for t in todays:
+        if not t.get("samples"):
+            t["samples"] = fetch_samples_subcollection(t.get("_doc_name", ""))
+
+    if not todays:
+        # Helpful fallback: show the most recent few so you can eyeball it
+        dated = [(local_date(t.get("startTimeMs")), t) for t in trips if t.get("startTimeMs")]
+        dated.sort(key=lambda x: int(x[1]["startTimeMs"]))
+        print("\nNo drive found for today. Most recent trips:")
+        for d, t in dated[-5:]:
+            print(f"  {d}  {t.get('scenario','?')} | {t.get('vehicle','?')} | "
+                  f"{len(t.get('samples') or [])} samples")
+        return
+
+    # Save raw
+    raw_path = f"todays_drive_{today}.json"
+    with open(raw_path, "w") as f:
+        json.dump(todays, f, indent=2)
+
+    # Summarize
+    stats = []
+    for t in todays:
+        s = analyse_trip(t)
+        s["_doc"] = t.get("_doc_name", "").split("/")[-1]
+        stats.append(s)
+    agg = aggregate_analysis(stats)
+
+    lines = [f"TODAY'S DRIVE SUMMARY — {today}", "=" * 50, ""]
+    lines.append(f"Drives today   : {agg.get('total_trips', 0)}")
+    lines.append(f"Total samples  : {agg.get('total_samples', 0)}")
+    lines.append(f"Mean speed     : {agg.get('mean_speed_kmh', 0)} km/h")
+    lines.append(f"Mean GPS acc   : {agg.get('mean_gps_accuracy_m', 0)} m")
+    lines.append("")
+    for i, (t, raw) in enumerate(zip(stats, todays), 1):
+        doc = t.get('_doc', '?')
+        status = 'finalized' if raw.get('uploadComplete') else 'NOT finalized'
+        lines.append(f"Drive {i}  [{doc} — {status}]  "
+                     f"({t.get('scenario','?')} | {t.get('vehicle','?')} | {t.get('mount_type','?')})")
+        lines.append(f"  Samples : {t['sample_count']}  Duration: {t.get('duration_s',0):.0f}s")
+        lines.append(f"  Speed   : mean {t.get('speed_mean_kmh',0)} km/h  max {t.get('speed_max_kmh',0)} km/h")
+        lines.append(f"  Z-score : mean {t.get('z_mean',0)}  p90 {t.get('z_p90',0)}  p99 {t.get('z_p99',0)}  max {t.get('z_max',0)}")
+        lines.append(f"  Colors  : green {t.get('pct_green',0)}%  yellow {t.get('pct_yellow',0)}%  "
+                     f"orange {t.get('pct_orange',0)}%  red {t.get('pct_red',0)}%")
+        lines.append(f"  Events  : braking {t.get('braking_events',0)}  bumps {t.get('bump_events',0)}  "
+                     f"low-spd-high-Z {t.get('low_speed_high_z_count',0)}")
+        lines.append("")
+    report = "\n".join(lines)
+
+    summary_path = "todays_drive_summary.txt"
+    with open(summary_path, "w") as f:
+        f.write(report)
+
+    print("\n" + report)
+    print(f"Saved: {raw_path}  |  {summary_path}")
+
+
+if __name__ == "__main__":
+    main()

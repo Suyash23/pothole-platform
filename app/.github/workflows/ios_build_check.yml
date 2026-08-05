@@ -1,0 +1,24 @@
+name: iOS Build Check
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Verify Podfile.lock is committed
+        run: |
+          if [ ! -f "ios/Podfile.lock" ]; then
+            echo "Podfile.lock is missing! Please commit it to ensure stable builds."
+            exit 1
+          fi
+          echo "Podfile.lock found."
+          
+      - name: Install dependencies
+        run: flutter pub get

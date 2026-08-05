@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "325179381241",
+    "project_id": "pothole-finder-e323f",
+    "storage_bucket": "pothole-finder-e323f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:325179381241:android:e64fb6b4c6ad4c7b659928",
+        "android_client_info": {
+          "package_name": "com.example.pothole_finder"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCzAiXuGJMcbJ_jqOl0PxwB3KR-JmIm3es"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
