@@ -1,0 +1,52 @@
+.status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: var(--statusbar-height);
+  padding: 0 var(--space-4);
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-color);
+  font-size: var(--text-meta);
+  position: relative;
+  z-index: 50;
+}
+
+.status-left, .status-center, .status-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.text-btn {
+  background: transparent;
+  border: none;
+  color: var(--accent-brand);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.text-btn:hover {
+  text-decoration: underline;
+}
+
+.attribution {
+  color: var(--text-secondary);
+}
+
+.severity-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.severity-ramp {
+  width: 100px;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(to right, var(--severity-mild), var(--severity-moderate), var(--severity-severe));
+}
+
+.view-table-btn {
+  font-weight: 600;
+}

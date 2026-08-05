@@ -1,0 +1,163 @@
+.left-filter-panel {
+  width: var(--left-panel-width);
+  height: 100%;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  transition: width 0.3s ease;
+  z-index: 40;
+}
+
+.left-filter-panel.collapsed {
+  width: var(--left-rail-width);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border-color);
+  height: 48px;
+}
+
+.left-filter-panel.collapsed .panel-header {
+  justify-content: center;
+  padding: var(--space-2);
+}
+
+.panel-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+.left-filter-panel.collapsed .panel-content {
+  padding: var(--space-4) 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.filters-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.filter-section {
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: var(--space-2);
+}
+
+.filter-section:last-child {
+  border-bottom: none;
+}
+
+.section-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: var(--space-2) 0;
+  font-family: inherit;
+}
+
+.section-header h3 {
+  font-size: var(--text-body);
+  font-weight: 600;
+  margin: 0;
+}
+
+.section-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) 0 var(--space-4) 0;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent-brand);
+}
+
+.range-slider {
+  width: 100%;
+  accent-color: var(--accent-brand);
+}
+
+.active-filter-indicator {
+  background: var(--accent-brand);
+  color: white;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: bold;
+}
+
+.panel-footer {
+  padding: var(--space-4);
+  border-top: 1px solid var(--border-color);
+}
+
+.reset-btn {
+  width: 100%;
+  padding: var(--space-2);
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.reset-btn:hover {
+  background: var(--border-color);
+}
+
+.date-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.date-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.date-input-group label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.date-picker {
+  padding: 6px var(--space-2);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-body);
+}

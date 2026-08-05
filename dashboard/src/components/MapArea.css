@@ -1,0 +1,147 @@
+.map-area-container {
+  flex: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.map-layer-toggles {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  border-radius: 6px;
+  z-index: 10;
+}
+
+.layers-menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-color);
+}
+
+.layers-menu label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-meta);
+  cursor: pointer;
+}
+
+.glass-btn {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-1);
+  border-radius: 4px;
+  padding: var(--space-2);
+  cursor: pointer;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+[data-theme='dark'] .glass-btn {
+  background: rgba(38, 41, 45, 0.8);
+}
+
+.time-slider-container {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 96px;
+  margin: 0 var(--space-4) var(--space-4) var(--space-4);
+  border-radius: 8px;
+  padding: var(--space-2) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.time-chips {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.chip {
+  font-family: inherit;
+  font-size: var(--text-meta);
+  padding: 4px 12px;
+  border-radius: 12px;
+  background: var(--border-color);
+  border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.2s, filter 0.2s;
+}
+
+.chip:hover {
+  filter: brightness(0.9);
+}
+
+.chip.active {
+  background: var(--accent-brand);
+  color: white;
+}
+
+.time-slider-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.compare-toggle .checkbox-label {
+  font-size: var(--text-meta);
+  color: var(--text-primary);
+}
+
+.slider-track-container {
+  flex: 1;
+  position: relative;
+  margin-top: var(--space-2);
+}
+
+.histogram-bars {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 0 var(--space-2);
+}
+
+.histogram-bars .bar {
+  flex: 1;
+  background: var(--border-color);
+  border-radius: 2px 2px 0 0;
+  opacity: 0.5;
+  transition: background 0.2s, opacity 0.2s;
+}
+
+.histogram-bars .bar.active {
+  background: var(--accent-brand);
+  opacity: 0.8;
+}
+
+.slider-controls {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.time-range-input {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent-brand);
+  opacity: 0.8;
+  cursor: pointer;
+}

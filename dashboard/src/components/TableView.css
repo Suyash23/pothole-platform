@@ -1,0 +1,83 @@
+.table-view-container {
+  flex: 1;
+  background: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.table-header-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-base);
+}
+
+.export-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.export-actions .glass-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+}
+
+.table-wrapper {
+  flex: 1;
+  overflow: auto;
+  padding: var(--space-4);
+}
+
+.defect-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.defect-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-base);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 2px solid var(--border-color);
+  font-weight: 600;
+  color: var(--text-secondary);
+  z-index: 10;
+}
+
+.defect-table td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.defect-table tbody tr:hover {
+  background: var(--bg-base);
+}
+
+.severity-cell {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: var(--text-meta);
+  font-weight: 600;
+}
+
+.severity-cell.severe {
+  background: rgba(229, 72, 77, 0.2);
+  color: #E5484D;
+}
+
+.severity-cell.moderate {
+  background: rgba(245, 200, 66, 0.2);
+  color: #F5C842;
+}
+
+.severity-cell.mild {
+  background: rgba(74, 144, 226, 0.2);
+  color: #4A90E2;
+}

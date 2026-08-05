@@ -1,0 +1,277 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  /* Colors - Light Theme (Default) */
+  --bg-base: #F5F2EC;
+  --bg-surface: #FFFFFF;
+  --text-primary: #111827;
+  --text-secondary: #4B5563;
+  --border-color: #E5E7EB;
+  
+  /* Brand */
+  --accent-brand: #2D9596;
+  --accent-brand-hover: #227576;
+
+  /* Severity Ramp */
+  --severity-low: transparent;
+  --severity-mild: #4A90E2;
+  --severity-moderate: #F5C842;
+  --severity-severe: #E5484D;
+
+  /* Typography */
+  --font-family: 'Inter', system-ui, sans-serif;
+  --text-body: 14px;
+  --text-meta: 12px;
+  --text-header: 18px;
+
+  /* Spacing (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Elevation */
+  --shadow-1: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+  --shadow-2: 0 4px 6px rgba(0,0,0,0.1), 0 2px 4px rgba(0,0,0,0.06);
+  --shadow-3: 0 10px 20px rgba(0,0,0,0.15), 0 6px 6px rgba(0,0,0,0.1);
+  --shadow-glass: 0 4px 30px rgba(0, 0, 0, 0.1);
+
+  /* Layout */
+  --topbar-height: 56px;
+  --statusbar-height: 32px;
+  --left-panel-width: 320px;
+  --left-rail-width: 56px;
+  --right-drawer-width: 400px;
+}
+
+[data-theme='dark'] {
+  /* Colors - Dark Theme */
+  --bg-base: #1A1D21;
+  --bg-surface: #26292D;
+  --text-primary: #F9FAFB;
+  --text-secondary: #9CA3AF;
+  --border-color: #374151;
+  
+  --shadow-1: 0 1px 3px rgba(0,0,0,0.5);
+  --shadow-2: 0 4px 6px rgba(0,0,0,0.5);
+  --shadow-3: 0 10px 20px rgba(0,0,0,0.5);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family);
+  font-size: var(--text-body);
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  overflow: hidden; /* App shell prevents scrolling on body */
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-size: var(--text-header);
+  font-weight: 600;
+}
+
+.text-meta {
+  font-size: var(--text-meta);
+  color: var(--text-secondary);
+}
+
+/* Glassmorphism utilities */
+.glass {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow: var(--shadow-glass);
+}
+
+[data-theme='dark'] .glass {
+  background: rgba(38, 41, 45, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Common App Shell Containers */
+#root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  height: 100%;
+}
+
+.main-content {
+  display: flex;
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ==========================================================================
+   Mobile Responsive Adaptations (Phase 5 - CSS Adaptation Pass)
+   ========================================================================== */
+@media (max-width: 768px) {
+  :root {
+    --left-panel-width: 280px;
+    --right-drawer-width: 100%;
+  }
+
+  /* 1. App Shell Adjustments */
+  .main-content {
+    flex-direction: column;
+  }
+
+  /* 2. Top Bar Responsiveness */
+  .top-bar {
+    padding: 0 var(--space-2);
+  }
+
+  .top-bar-center {
+    max-width: none;
+    margin: 0 var(--space-2);
+    gap: var(--space-2);
+  }
+
+  .search-container {
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .search-container input {
+    font-size: 13px;
+  }
+
+  .city-selector {
+    display: none; /* Hide selector on mobile to conserve space, rely on search */
+  }
+
+  .top-bar-right .sign-in-btn span {
+    display: none; /* Icon-only user button */
+  }
+
+  /* 3. Left Filter Panel - Transition to GPU Sliding Drawer */
+  .left-filter-panel {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: var(--left-panel-width) !important;
+    height: 100%;
+    z-index: 90;
+    transform: translateX(0);
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 10px 0 30px rgba(0, 0, 0, 0.25);
+  }
+
+  .left-filter-panel.collapsed {
+    transform: translateX(-100%);
+    width: var(--left-panel-width) !important;
+  }
+
+  /* Absolute position collapse button to overlay on the map when collapsed */
+  .left-filter-panel.collapsed .collapse-btn {
+    position: fixed;
+    left: var(--space-4);
+    top: calc(var(--topbar-height) + var(--space-4));
+    background: var(--bg-surface);
+    box-shadow: var(--shadow-2);
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    z-index: 95;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* 4. Right Drawer - Transition to Sliding Bottom Sheet */
+  .right-drawer {
+    position: absolute;
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100% !important;
+    height: 60vh;
+    border-left: none;
+    border-top: 1px solid var(--border-color);
+    border-radius: 20px 20px 0 0;
+    z-index: 85;
+    animation: slideUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  @keyframes slideUp {
+    from {
+      transform: translateY(100%);
+    }
+    to {
+      transform: translateY(0);
+    }
+  }
+
+  /* 5. Map Toggles & Time Slider overlays on mobile */
+  .map-layer-toggles {
+    top: var(--space-2);
+    right: var(--space-2);
+  }
+
+  .time-slider-container {
+    left: var(--space-2) !important;
+    right: var(--space-2) !important;
+    bottom: calc(var(--statusbar-height) + var(--space-2)) !important;
+    width: auto !important;
+    padding: var(--space-2) !important;
+  }
+
+  .time-chips {
+    overflow-x: auto;
+    max-width: 70%;
+    white-space: nowrap;
+    padding-bottom: 2px;
+  }
+
+  .time-chips::-webkit-scrollbar {
+    display: none; /* Hide scrollbar for compact view */
+  }
+
+  .compare-toggle {
+    font-size: 11px;
+  }
+
+  .histogram-bars {
+    height: 35px; /* Shorter histogram to fit mobile overlay */
+  }
+
+  /* 6. Status Bar Layout adjustments */
+  .status-bar {
+    height: auto;
+    flex-direction: column;
+    padding: var(--space-2);
+    gap: var(--space-2);
+    align-items: stretch;
+    text-align: center;
+  }
+
+  .status-left, .status-center, .status-right {
+    justify-content: center;
+    font-size: 11px;
+  }
+
+  .attribution {
+    display: none; /* Hide attribution text on mobile footer to fit legend */
+  }
+}
+
