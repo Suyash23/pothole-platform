@@ -1,0 +1,24 @@
+# firebase admin to pull raw trips
+firebase-admin==6.4.0
+
+# fast and powerful dataframe processing for big data
+pandas==2.2.1
+geopandas==0.14.3
+numpy==1.26.4
+
+# ML algorithms (Gaussian Mixture, KMeans)
+scikit-learn==1.4.1.post1
+
+# Geometry math
+shapely==2.0.3
+
+# (Optional later) to map match road segments via API:
+requests==2.31.0
+
+PyYAML==6.0.1
+
+pytest==7.4.3
+
+fastapi
+uvicorn
+

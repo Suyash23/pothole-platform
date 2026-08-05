@@ -1,0 +1,48 @@
+duration_sec: 1800.0
+vehicle: SUV
+seed: 123
+start_lat: 37.7749
+start_lon: -122.4194
+heading_deg: 135.0
+events:
+  - type: pothole
+    timestamp_sec: 60.0
+    params:
+      depth_cm: 6.0
+      speed_kmh: 80.0
+  - type: pothole
+    timestamp_sec: 120.0
+    params:
+      depth_cm: 4.0
+      speed_kmh: 80.0
+  - type: speed_bump
+    timestamp_sec: 300.0
+    params:
+      height_cm: 15.0
+      speed_kmh: 30.0
+  - type: pothole
+    timestamp_sec: 450.0
+    params:
+      depth_cm: 8.0
+      speed_kmh: 100.0
+  - type: rough_patch
+    timestamp_sec: 800.0
+    params:
+      length_m: 50.0
+      roughness: 0.8
+      speed_kmh: 100.0
+  - type: pothole
+    timestamp_sec: 1200.0
+    params:
+      depth_cm: 5.0
+      speed_kmh: 60.0
+  - type: hard_brake
+    timestamp_sec: 1400.0
+    params:
+      decel_g: 0.7
+      duration_sec: 4.0
+  - type: pothole
+    timestamp_sec: 1600.0
+    params:
+      depth_cm: 7.0
+      speed_kmh: 40.0

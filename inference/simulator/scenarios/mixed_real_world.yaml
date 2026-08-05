@@ -1,0 +1,28 @@
+duration_sec: 120.0
+vehicle: SEDAN
+seed: 42
+events:
+  - type: pothole
+    timestamp_sec: 10.0
+    params:
+      depth_cm: 5.0
+      speed_kmh: 50.0
+  - type: speed_bump
+    timestamp_sec: 30.0
+    params:
+      height_cm: 10.0
+      speed_kmh: 20.0
+  - type: hard_brake
+    timestamp_sec: 50.0
+    params:
+      decel_g: 0.6
+      duration_sec: 3.0
+  - type: phone_handling
+    timestamp_sec: 80.0
+    params:
+      action: pickup
+  - type: manhole
+    timestamp_sec: 100.0
+    params:
+      depth_cm: 2.0
+      speed_kmh: 40.0

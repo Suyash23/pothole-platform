@@ -1,0 +1,28 @@
+duration_sec: 60.0
+vehicle: MOTORCYCLE
+seed: 99
+events:
+  - type: rough_patch
+    timestamp_sec: 5.0
+    params:
+      duration_sec: 5.0
+      severity: 1.5
+  - type: pothole
+    timestamp_sec: 15.0
+    params:
+      depth_cm: 8.0
+      speed_kmh: 60.0
+  - type: phone_handling
+    timestamp_sec: 25.0
+    params:
+      action: drop
+  - type: aggressive_acceleration
+    timestamp_sec: 40.0
+    params:
+      accel_g: 0.8
+      duration_sec: 2.0
+  - type: hard_brake
+    timestamp_sec: 45.0
+    params:
+      decel_g: 0.9
+      duration_sec: 2.0
