@@ -1,17 +1,38 @@
 name: iOS Build Check
 
+# Monorepo: this workflow owns app/ only. All shell steps run from app/ via
+# the defaults below, so paths here are relative to the Flutter project root.
+
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - 'app/**'
+      - '.github/workflows/app-ios_build_check.yml'
   pull_request:
     branches: [ "main" ]
+    paths:
+      - 'app/**'
+      - '.github/workflows/app-ios_build_check.yml'
+
+defaults:
+  run:
+    working-directory: app
 
 jobs:
   build:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      
+
+      # macOS runners do NOT ship Flutter, so the steps below had nothing to
+      # run against — this job could not have passed as written, independently
+      # of the monorepo move.
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
       - name: Verify Podfile.lock is committed
         run: |
           if [ ! -f "ios/Podfile.lock" ]; then
@@ -19,6 +40,6 @@ jobs:
             exit 1
           fi
           echo "Podfile.lock found."
-          
+
       - name: Install dependencies
         run: flutter pub get

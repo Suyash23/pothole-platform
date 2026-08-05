@@ -1,23 +1,37 @@
-name: Simulator CI
+name: Inference CI
+
+# Monorepo: this workflow owns inference/ only. The path filter keeps it from
+# running when a Flutter or dashboard change lands, and every step runs from
+# inference/ via the defaults below.
 
 on:
   pull_request:
     branches:
       - main
+    paths:
+      - 'inference/**'
+      - '.github/workflows/inference-ci.yml'
   push:
     branches:
       - main
+    paths:
+      - 'inference/**'
+      - '.github/workflows/inference-ci.yml'
+
+defaults:
+  run:
+    working-directory: inference
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Python 3.9
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: 3.9
+          python-version: '3.9'
 
       - name: Install dependencies
         run: |
@@ -27,6 +41,7 @@ jobs:
 
       - name: Run Pytest
         env:
+          # Relative to inference/, so the `simulator` package is importable.
           PYTHONPATH: .
         run: pytest tests/
 
@@ -39,17 +54,13 @@ jobs:
         run: |
           echo "Validating Adversarial Scenario"
           python simulator/validation.py --trace out/adversarial.json --gt out/adversarial_ground_truth.csv > metrics.json
-          
-          # Example custom bash check for metrics thresholds
+
           PRECISION=$(jq -r '.precision' metrics.json)
           RECALL=$(jq -r '.recall' metrics.json)
-          
-          # Using bc for floating point comparison. If it drops too much, fail.
-          # Here we just ensure precision > 0.0 for the sake of the script working,
-          # but normally we'd compare to main branch metrics.
-          # Prompt S3 says: "Fail the build if precision drops more than 5% or recall drops more than 10%."
-          # This requires fetching previous metrics, which can be done by downloading an artifact from the main branch.
-          # We'll put a placeholder for that logic.
+
+          # TODO: compare against the main-branch baseline and fail if precision
+          # drops >5% or recall >10%. That needs the previous run's metrics.json
+          # downloaded as an artifact; today this step only reports.
           echo "Precision: $PRECISION, Recall: $RECALL"
 
       - name: Comment PR
