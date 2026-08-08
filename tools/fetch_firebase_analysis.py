@@ -12,9 +12,9 @@ Output:
     firebase_analysis_summary.json  — key statistics for each trip
     firebase_analysis_report.txt    — human-readable narrative report
 
-The script hits the public Firestore REST API using your web API key.
-No service-account credentials required as long as your Firestore rules
-allow unauthenticated reads (typical for this project).
+The script hits the Firestore REST API using the web API key above and an
+anonymous ID token. The rules require a signed-in caller (they were opened to
+the whole internet until 2026-08-04); no service-account key is needed.
 """
 
 import json
@@ -32,6 +32,83 @@ except ImportError:
 PROJECT_ID = "pothole-finder-e323f"
 API_KEY    = "AIzaSyBvM3i-F0vQKDhjWv8_B80kE2HMe8glhVs"
 BASE_URL   = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
+
+# ── Authentication ─────────────────────────────────────────────────────────────
+#
+# These scripts used to read Firestore with nothing but the API key above,
+# because the rules were `allow read, write: if true` — the whole database was
+# open to the internet. That was fixed on 2026-08-04 (see
+# firebase/firestore.rules); reads now require an authenticated caller, so the
+# scripts sign in anonymously exactly as the app and dashboard do, and send the
+# resulting ID token as a bearer credential.
+#
+# The token is cached OUTSIDE the repo (~/.pothole_platform_auth.json) and
+# reused until it expires, so a tuning session that runs these scripts dozens
+# of times does not mint dozens of anonymous accounts. The cache holds a
+# refresh token — it is a credential; keep it local, and note the path is
+# deliberately not inside the working tree.
+
+import os
+import time
+
+_AUTH_CACHE = os.path.expanduser("~/.pothole_platform_auth.json")
+_IDENTITY = "https://identitytoolkit.googleapis.com/v1"
+
+
+def _load_cached_token():
+    try:
+        with open(_AUTH_CACHE) as f:
+            c = json.load(f)
+        if c.get("expires_at", 0) > time.time() + 60:
+            return c.get("id_token")
+        if c.get("refresh_token"):
+            r = requests.post(
+                f"https://securetoken.googleapis.com/v1/token?key={API_KEY}",
+                data={"grant_type": "refresh_token",
+                      "refresh_token": c["refresh_token"]},
+                timeout=30)
+            if r.status_code == 200:
+                d = r.json()
+                return _save_token(d["id_token"], d["refresh_token"],
+                                   int(d.get("expires_in", 3600)))
+    except Exception:
+        pass
+    return None
+
+
+def _save_token(id_token, refresh_token, expires_in):
+    try:
+        with open(_AUTH_CACHE, "w") as f:
+            json.dump({"id_token": id_token, "refresh_token": refresh_token,
+                       "expires_at": time.time() + expires_in}, f)
+        os.chmod(_AUTH_CACHE, 0o600)
+    except Exception:
+        pass
+    return id_token
+
+
+def id_token():
+    """Anonymous ID token for Firestore REST calls, cached across runs."""
+    cached = _load_cached_token()
+    if cached:
+        return cached
+    r = requests.post(f"{_IDENTITY}/accounts:signUp?key={API_KEY}",
+                      json={"returnSecureToken": True}, timeout=30)
+    if r.status_code != 200:
+        print(f"ERROR: anonymous sign-in failed ({r.status_code}): {r.text[:200]}")
+        print("Is Anonymous sign-in enabled? Firebase console → Authentication "
+              "→ Sign-in method → Anonymous.")
+        sys.exit(1)
+    d = r.json()
+    return _save_token(d["idToken"], d["refreshToken"],
+                       int(d.get("expiresIn", 3600)))
+
+
+# Every script issues its Firestore calls through this session, so the bearer
+# token is attached in exactly one place. Import it instead of using `requests`
+# directly:  from fetch_firebase_analysis import SESSION
+SESSION = requests.Session()
+SESSION.headers.update({"Authorization": f"Bearer {id_token()}"})
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -74,7 +151,7 @@ def fetch_samples_subcollection(doc_name):
         if page_token:
             url += f"&pageToken={page_token}"
         try:
-            r = requests.get(url, timeout=30)
+            r = SESSION.get(url, timeout=30)
         except requests.exceptions.RequestException as e:
             print(f"    subcollection fetch error for {trip_id}: {e}")
             break
@@ -103,7 +180,7 @@ def fetch_all_trips():
             url += f"&pageToken={page_token}"
         print(f"  Fetching page {page} …", end="", flush=True)
         try:
-            r = requests.get(url, timeout=30)
+            r = SESSION.get(url, timeout=30)
         except requests.exceptions.ConnectionError as e:
             print(f"\nERROR: Could not connect to Firestore.\n  {e}")
             print("  Make sure you are NOT behind a restrictive proxy "

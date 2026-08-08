@@ -44,6 +44,9 @@ dependencies:
   vector_math: ^2.1.4
   firebase_core: ^4.4.0
   cloud_firestore: ^6.1.2
+  # Anonymous sign-in so Firestore writes carry a uid, which the tightened
+  # Firestore rules require. See ensureSignedIn() in lib/main.dart.
+  firebase_auth: ^6.1.0
   fl_chart: ^1.1.1
   file_picker: ^11.0.2
   wakelock_plus: ^1.5.2

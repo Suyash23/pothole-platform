@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'models.dart';
@@ -680,6 +681,12 @@ class RoadRecorder extends ChangeNotifier {
   // ── Private helpers ──────────────────────────────────────────────────────────
 
   /// Creates the Firestore trip document at recording start. Called in background.
+  /// The current anonymous uid, or empty when sign-in has not completed (e.g.
+  /// the first launch happened offline). An empty uid means the trip document
+  /// will be rejected by the rules; the trip still records to local SQLite and
+  /// the retry path re-creates it once sign-in succeeds.
+  String _currentUid() => FirebaseAuth.instance.currentUser?.uid ?? '';
+
   Future<void> _initFirestoreTrip() async {
     final tripId = _activeTripId;
     try {
@@ -691,6 +698,12 @@ class RoadRecorder extends ChangeNotifier {
         await _db.setTripFirestoreDocId(tripId, docRef.id);
       }
       await docRef.set({
+        // The creating device's anonymous uid. The Firestore rules key every
+        // later update/delete of this trip (and of its subcollections) off
+        // this field, so only the device that recorded a drive can modify it
+        // — see firebase/firestore.rules. It MUST be written at create time;
+        // the rules reject a trip document without it.
+        'ownerUid': _currentUid(),
         'startTimeMs': DateTime.now().millisecondsSinceEpoch,
         'endTimeMs': null,
         'fidelity': _fidelity,
@@ -884,6 +897,10 @@ class RoadRecorder extends ChangeNotifier {
       // original init write never landed would otherwise make update() throw.
       // merge:true creates-or-updates and fills any missing metadata.
       await docRef.set({
+        // Re-stamped here because this merge-set doubles as the create path
+        // for a reused doc whose original init write never landed — such a doc
+        // would otherwise reach the rules with no ownerUid and be rejected.
+        'ownerUid': _currentUid(),
         'startTimeMs': samples.isNotEmpty ? samples.first.ts : endTime,
         'endTimeMs': endTime,
         'fidelity': fidelity,

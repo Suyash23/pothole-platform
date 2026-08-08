@@ -1,15 +1,97 @@
 rules_version = '2';
 
+// Firestore security rules for pothole-finder-e323f.
+//
+// ─── WHAT THESE REPLACED, AND WHY ────────────────────────────────────────────
+// Until 2026-08-04 both collections were:
+//
+//     allow read, write: if true;
+//
+// That is unauthenticated read AND write from anywhere on the internet. Every
+// drive ever recorded — GPS traces of real routes, including home and work —
+// was world-readable, and anyone could overwrite or delete all of it. The
+// project id is not a secret that mitigates this: it ships inside every copy
+// of the app (firebase_options.dart, GoogleService-Info.plist, the web
+// bundle), so it is trivially recoverable from any build. Authentication is
+// the control; hiding the id is not.
+//
+// ─── THE MODEL ───────────────────────────────────────────────────────────────
+// The app signs in ANONYMOUSLY at startup (see ensureSignedIn() in
+// app/lib/main.dart) and stamps each trip with the creating device's uid in
+// `ownerUid`. From there:
+//
+//   • reads   — any signed-in client. The dashboard and the tools/ analysis
+//               scripts need to see every trip, and anonymous auth is a low
+//               bar, so this is deliberately NOT owner-scoped. It does close
+//               the anonymous-internet hole, and it can be tightened to
+//               owner-only or to an allow-list later without app changes.
+//   • create  — must stamp your own uid; you cannot create a trip owned by
+//               someone else.
+//   • update  — owner only, and the owner cannot be reassigned.
+//   • delete  — owner only.
+//
+// Subcollections (samples, events, lc_diag, impulse_diag) inherit the parent
+// trip's ownership via a get() lookup, so a third party cannot append fake
+// samples or telemetry to someone else's drive.
+//
+// KNOWN LIMIT: an anonymous uid is per-install. Reinstalling the app yields a
+// new uid, after which the app can no longer modify its own older trips. That
+// is an accepted trade — trips remain readable for analysis, and nothing can
+// rewrite recorded history. If cross-install continuity is ever needed, move
+// to a real (or linked) auth provider rather than loosening these rules.
+//
+// ─── DEPLOY ORDER MATTERS ────────────────────────────────────────────────────
+// Deploying these rules BEFORE a build with firebase_auth reaches the phone
+// will break uploads: the app would write with no uid and be denied. Ship the
+// app first, confirm a drive uploads, then deploy:
+//
+//     firebase deploy --only firestore:rules
+//
+// Pre-existing trips have no `ownerUid`. They stay readable, and they are
+// intentionally immutable — no client can claim or edit them. Delete them from
+// the console if they need to go.
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Allow public read/write access to the "trips" collection
-    match /trips/{document=**} {
-      allow read, write: if true;
+
+    function signedIn() {
+      return request.auth != null;
     }
-    
-    // Also allow access to the "inferred_lanes" collection
+
+    // The trip document being written names the caller as its owner.
+    function ownsIncoming() {
+      return signedIn() && request.resource.data.ownerUid == request.auth.uid;
+    }
+
+    // The trip document already stored is owned by the caller.
+    function ownsExisting() {
+      return signedIn()
+             && resource.data.ownerUid is string
+             && resource.data.ownerUid == request.auth.uid;
+    }
+
+    match /trips/{tripId} {
+      allow read: if signedIn();
+      allow create: if ownsIncoming();
+      // Owner only, and ownerUid may not be reassigned to someone else.
+      allow update: if ownsExisting() && ownsIncoming();
+      allow delete: if ownsExisting();
+
+      // samples / events / lc_diag / impulse_diag — ownership follows the
+      // parent trip, so nobody can graft data onto another device's drive.
+      match /{subcollection}/{docId} {
+        allow read: if signedIn();
+        allow write: if signedIn()
+                     && get(/databases/$(database)/documents/trips/$(tripId))
+                          .data.ownerUid == request.auth.uid;
+      }
+    }
+
+    // Written by the inference service via the Admin SDK, which bypasses these
+    // rules entirely. Clients only ever read it.
     match /inferred_lanes/{document=**} {
-      allow read, write: if true;
+      allow read: if signedIn();
+      allow write: if false;
     }
   }
 }

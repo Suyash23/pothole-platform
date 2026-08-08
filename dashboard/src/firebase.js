@@ -1,4 +1,5 @@
 import { initializeApp } from "firebase/app";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, collection, getDocs, doc, getDoc, updateDoc, deleteDoc } from "firebase/firestore";
 
 const firebaseConfig = {
@@ -14,12 +15,30 @@ const firebaseConfig = {
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+const auth = getAuth(app);
 
-export { app, db };
+// The Firestore rules require an authenticated caller — reads are `if
+// request.auth != null`, not `if true` (see firebase/firestore.rules). The
+// dashboard has no accounts, so it signs in anonymously, exactly as the phone
+// app does.
+//
+// Every data helper below awaits this promise before touching Firestore.
+// Without it the first read races the sign-in round-trip and fails with
+// permission-denied on a cold load — intermittently, which is the worst way
+// for this to show up.
+const authReady = new Promise((resolve, reject) => {
+  onAuthStateChanged(auth, (user) => {
+    if (user) resolve(user);
+  });
+  signInAnonymously(auth).catch(reject);
+});
+
+export { app, db, auth, authReady };
 
 // Helper to fetch all inferred lanes
 export async function fetchInferredLanes() {
   try {
+    await authReady;
     const qSnapshot = await getDocs(collection(db, "inferred_lanes"));
     const lanes = [];
     qSnapshot.forEach((doc) => {
@@ -38,6 +57,7 @@ export async function fetchInferredLanes() {
 // Helper to fetch all trips
 export async function fetchTrips() {
   try {
+    await authReady;
     const qSnapshot = await getDocs(collection(db, "trips"));
     const trips = [];
     qSnapshot.forEach((doc) => {
@@ -56,6 +76,7 @@ export async function fetchTrips() {
 // Helper to delete an entire trip document
 export async function deleteTripDocument(docId) {
   try {
+    await authReady;
     await deleteDoc(doc(db, "trips", docId));
     console.log(`Successfully deleted trip document: ${docId}`);
     return true;
@@ -68,6 +89,7 @@ export async function deleteTripDocument(docId) {
 // Helper to prune a specific coordinate sample from a document's samples array
 export async function pruneTelemetrySample(source, docId, sampleIndex) {
   try {
+    await authReady;
     const collectionName = source === 'trip' ? 'trips' : 'inferred_lanes';
     const docRef = doc(db, collectionName, docId);
     

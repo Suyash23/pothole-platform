@@ -27,7 +27,7 @@ except ImportError:
     print("ERROR: 'requests' not installed. Run:  pip install requests")
     sys.exit(1)
 
-from fetch_firebase_analysis import API_KEY, BASE_URL, doc_to_dict
+from fetch_firebase_analysis import API_KEY, BASE_URL, doc_to_dict, SESSION
 
 # Pairing window between a ground-truth mark and a diag row. Manual marks are
 # anchored ~1.4 s before the button press and the manoeuvre itself spans
@@ -41,7 +41,7 @@ def fetch_all_trips():
         url = f"{BASE_URL}/trips?key={API_KEY}&pageSize=50"
         if token:
             url += f"&pageToken={token}"
-        r = requests.get(url, timeout=30)
+        r = SESSION.get(url, timeout=30)
         if r.status_code != 200:
             print(f"ERROR {r.status_code}: {r.text[:200]}")
             sys.exit(1)
@@ -63,7 +63,7 @@ def fetch_subcollection(doc_name, sub):
         url = f"https://firestore.googleapis.com/v1/{doc_name}/{sub}?key={API_KEY}&pageSize=300"
         if token:
             url += f"&pageToken={token}"
-        r = requests.get(url, timeout=30)
+        r = SESSION.get(url, timeout=30)
         if r.status_code != 200:
             return out
         data = r.json()

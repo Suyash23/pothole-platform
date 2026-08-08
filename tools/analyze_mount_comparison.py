@@ -23,6 +23,10 @@ try:
 except ImportError:
     sys.exit("Run:  pip install requests")
 
+# Firestore rules require a signed-in caller (they were world-open until
+# 2026-08-04). SESSION carries the anonymous ID token.
+from fetch_firebase_analysis import SESSION
+
 PROJECT_ID = "pothole-finder-e323f"
 API_KEY    = "AIzaSyBvM3i-F0vQKDhjWv8_B80kE2HMe8glhVs"
 BASE_URL   = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
@@ -65,7 +69,7 @@ def fetch_all_trips():
         url = f"{BASE_URL}/trips?key={API_KEY}&pageSize=20"
         if page_token: url += f"&pageToken={page_token}"
         print(f"  Fetching trip page {page}…", end="", flush=True)
-        r = requests.get(url, timeout=30)
+        r = SESSION.get(url, timeout=30)
         if r.status_code != 200:
             sys.exit(f"\nHTTP {r.status_code}: {r.text[:300]}")
         data = r.json()
@@ -87,7 +91,7 @@ def fetch_samples_for_trip(trip_doc_name):
     while True:
         url = f"{BASE_URL}/trips/{trip_id}/samples?key={API_KEY}&pageSize=20"
         if page_token: url += f"&pageToken={page_token}"
-        r = requests.get(url, timeout=30)
+        r = SESSION.get(url, timeout=30)
         if r.status_code != 200: break
         data = r.json()
         for doc in data.get("documents", []):

@@ -24,6 +24,7 @@ except ImportError:
     sys.exit(1)
 
 from fetch_firebase_analysis import (
+    SESSION,
     PROJECT_ID, API_KEY, BASE_URL,
     doc_to_dict, analyse_trip, aggregate_analysis,
     fetch_samples_subcollection,
@@ -37,7 +38,7 @@ def fetch_all_trips():
         url = f"{BASE_URL}/trips?key={API_KEY}&pageSize=50"
         if token:
             url += f"&pageToken={token}"
-        r = requests.get(url, timeout=30)
+        r = SESSION.get(url, timeout=30)
         if r.status_code != 200:
             print(f"ERROR {r.status_code}: {r.text[:200]}")
             sys.exit(1)

@@ -9,6 +9,7 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart'; // for kIsWeb
 import 'package:geolocator/geolocator.dart';
@@ -26,7 +27,36 @@ import 'package:file_picker/file_picker.dart' as fp;
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await ensureSignedIn();
   runApp(const RoadQualityApp());
+}
+
+/// Signs the device in anonymously so Firestore writes carry a uid.
+///
+/// WHY: until 2026-08-04 the Firestore rules were `allow read, write: if true`
+/// — every drive ever recorded was world-readable AND world-writable to anyone
+/// holding the project id, which ships inside every copy of this app and
+/// therefore cannot be kept secret. The fix is authentication, not hiding the
+/// id: the rules now require a uid and scope each trip to the device that
+/// created it (see firebase/firestore.rules).
+///
+/// Anonymous auth is used because the app has no accounts and needs none — it
+/// gives each install a stable uid with no login UX. The uid persists across
+/// launches (cached by the Firebase SDK) but NOT across reinstalls, so a
+/// reinstalled app cannot modify its own older trips. That is the intended
+/// trade: trips stay readable for analysis, and nobody can rewrite history.
+///
+/// Failure is deliberately NON-FATAL. Recording writes to local SQLite first
+/// and uploads later, so a device that starts a drive offline still collects
+/// data; the upload path retries on the next launch once sign-in succeeds.
+Future<void> ensureSignedIn() async {
+  try {
+    if (FirebaseAuth.instance.currentUser == null) {
+      await FirebaseAuth.instance.signInAnonymously();
+    }
+  } catch (e) {
+    debugPrint('Anonymous sign-in failed (recording continues locally): $e');
+  }
 }
 
 class RoadQualityApp extends StatelessWidget {

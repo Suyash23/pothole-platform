@@ -35,6 +35,10 @@ try:
 except ImportError:
     sys.exit("pip install requests")
 
+# Firestore rules require a signed-in caller (they were world-open until
+# 2026-08-04). SESSION carries the anonymous ID token.
+from fetch_firebase_analysis import SESSION
+
 PROJECT_ID = "pothole-finder-e323f"
 API_KEY = "AIzaSyBvM3i-F0vQKDhjWv8_B80kE2HMe8glhVs"
 BASE = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
@@ -72,7 +76,7 @@ def fetch_trips():
         url = f"{BASE}/trips?key={API_KEY}&pageSize=50"
         if token:
             url += f"&pageToken={token}"
-        r = requests.get(url, timeout=30)
+        r = SESSION.get(url, timeout=30)
         r.raise_for_status()
         data = r.json()
         for doc in data.get("documents", []):
@@ -92,7 +96,7 @@ def subcollection_stats(trip_id, name):
         url = f"{BASE}/trips/{trip_id}/{name}?key={API_KEY}&pageSize=50"
         if token:
             url += f"&pageToken={token}"
-        r = requests.get(url, timeout=30)
+        r = SESSION.get(url, timeout=30)
         if r.status_code != 200:
             break
         data = r.json()
@@ -116,7 +120,7 @@ def day(ms):
 
 def delete_doc(trip_id):
     url = f"{BASE}/trips/{trip_id}?key={API_KEY}"
-    r = requests.delete(url, timeout=30)
+    r = SESSION.delete(url, timeout=30)
     return r.status_code in (200, 204)
 
 
