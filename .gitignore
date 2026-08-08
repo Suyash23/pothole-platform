@@ -41,3 +41,6 @@ __pycache__/
 .pytest_cache/
 inference/out/
 inference/uvicorn.log
+
+# ── Cloudflare Wrangler local state ───────────────────────────────────────
+.wrangler/
