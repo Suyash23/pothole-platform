@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 from sklearn.mixture import GaussianMixture
@@ -6,10 +7,48 @@ import time
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# Global Firebase Init
-cred = credentials.Certificate("firebase-credentials.json")
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+# Firebase is initialised LAZILY, on first Firestore use.
+#
+# This module used to call credentials.Certificate(...) and initialize_app() at
+# import time, which made importing it impossible without the service-account
+# key on disk. That key is (correctly) gitignored, so CI could not even collect
+# tests/test_multi_trip_aggregation.py — it imports infer_lanes_from_data from
+# here, and the import raised before pytest reached the test.
+#
+# The pure computation in this module needs no credentials; only the two
+# Firestore helpers do. Deferring the connection keeps those functions working
+# exactly as before while letting the analysis code be imported and unit-tested
+# anywhere.
+_db = None
+
+# Path to the service-account JSON. GOOGLE_APPLICATION_CREDENTIALS is the
+# standard Google variable and wins if set, so deployments can inject the key
+# without editing code.
+CREDENTIALS_PATH = os.environ.get(
+    "GOOGLE_APPLICATION_CREDENTIALS", "firebase-credentials.json"
+)
+
+
+def get_db():
+    """Returns the Firestore client, initialising Firebase on first call.
+
+    Raises FileNotFoundError with an actionable message when the
+    service-account key is missing, rather than failing at import.
+    """
+    global _db
+    if _db is not None:
+        return _db
+    if not os.path.exists(CREDENTIALS_PATH):
+        raise FileNotFoundError(
+            f"Firebase service-account key not found at '{CREDENTIALS_PATH}'. "
+            "It is gitignored by design — place it there locally, or point "
+            "GOOGLE_APPLICATION_CREDENTIALS at it. Firestore access needs it; "
+            "the analysis functions in this module do not."
+        )
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(credentials.Certificate(CREDENTIALS_PATH))
+    _db = firestore.client()
+    return _db
 
 def fetch_raw_trips_from_firebase():
     """
@@ -18,7 +57,7 @@ def fetch_raw_trips_from_firebase():
     """
     print("Fetching real crowd-sourced GPS trips from Firestore...")
     
-    trips_ref = db.collection(u'trips')
+    trips_ref = get_db().collection(u'trips')
     docs = trips_ref.stream()
     
     trips = []
@@ -98,7 +137,7 @@ def infer_lanes_from_data(trips):
 
 def upload_clean_lanes_to_firestore(clean_samples):
     print("\nUploading mathematically smoothed lane to Firestore ('inferred_lanes' collection)...")
-    lanes_ref = db.collection(u'inferred_lanes')
+    lanes_ref = get_db().collection(u'inferred_lanes')
     
     # Clear out old inferred data
     for doc in lanes_ref.stream():
