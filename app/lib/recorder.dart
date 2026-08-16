@@ -638,11 +638,21 @@ class RoadRecorder extends ChangeNotifier {
         final sampleRows = await _db.getGpsSamples(tripId);
         final samples = sampleRows.map(GpsSample.fromRow).toList();
 
-        if (samples.isEmpty) {
-          // Nothing to upload — just clear the flag.
-          await _db.markTripUploaded(tripId);
-          continue;
-        }
+        // v1.3.5: a trip with zero LOCAL samples used to short-circuit here —
+        // markTripUploaded(tripId) with no network call at all, unconditionally.
+        // That is why "Sync with Firebase" could report everything synced while
+        // offline: most pending trips are exactly this case (a drive that ended
+        // with nothing captured locally), and clearing the flag purely locally
+        // needs no connectivity to "succeed". It also left the Firestore doc —
+        // already created at drive-start — stuck at uploadComplete:false forever,
+        // since nothing ever told the server this trip was done.
+        //
+        // Empty trips now go through the SAME _finalizeFirestoreUpload call as
+        // everything else below, which already handles samples:[] correctly (no
+        // sample batches get written, but the parent doc still gets a real
+        // merge-set with uploadComplete:true/sampleCount:0) and is genuinely
+        // network-aware — its try/catch only calls markTripUploaded after every
+        // write succeeds, so an offline attempt correctly leaves the trip pending.
 
         // Reuse the trip's original Firestore doc if we recorded one, so a retry
         // updates that document instead of spawning a duplicate. If none was ever
@@ -654,7 +664,14 @@ class RoadRecorder extends ChangeNotifier {
 
         await _finalizeFirestoreUpload(
           tripId: tripId,
-          endTime: (row['end_time'] as int?) ?? samples.last.ts,
+          // samples can legitimately be empty here, so this must not read
+          // samples.last — end_time is guaranteed non-null by the
+          // getUnuploadedTrips() query, but the fallback stays crash-safe
+          // regardless.
+          endTime: (row['end_time'] as int?) ??
+              (samples.isNotEmpty
+                  ? samples.last.ts
+                  : DateTime.now().millisecondsSinceEpoch),
           firestoreDocRef: docRef,
           samples: samples,
           lastUploadedTs: 0,
