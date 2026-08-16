@@ -1,3 +1,19 @@
+/// pothole-platform — app/
+///
+/// Version 1.3.5+7 — matches `pubspec.yaml`'s `version:` line, which is the
+/// source of truth (bump BOTH together; this comment mirrors it so the
+/// version is visible without opening pubspec.yaml). At build time that
+/// value becomes CFBundleShortVersionString/CFBundleVersion on iOS and
+/// versionName/versionCode on Android — check Settings → General → iPhone
+/// Storage → Pothole Finder (or Android's App Info) after installing to
+/// confirm a build actually landed on the device.
+///
+/// Recent changes: speed-scaled pothole/joint boundary and band-passed
+/// lane-change yaw (detector.dart), Firebase Anonymous auth + ownerUid
+/// rules, offline-safe "Sync with Firebase" (recorder.dart). Full history:
+/// CHANGELOG.md and `git log`.
+library;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
