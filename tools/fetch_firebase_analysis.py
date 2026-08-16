@@ -88,17 +88,33 @@ def _save_token(id_token, refresh_token, expires_in):
 
 
 def id_token():
-    """Anonymous ID token for Firestore REST calls, cached across runs."""
+    """Anonymous ID token for Firestore REST calls, cached across runs.
+
+    Returns None (never exits) when sign-in fails, so callers can fall back
+    to an unauthenticated request. That fallback matters during the rollout
+    window: the rules are deployed as `if true` until the Anonymous provider
+    is switched on in the console AND `firebase deploy --only firestore:rules`
+    runs (see the ORDER MATTERS section of the README) — until then, every
+    script importing this module would otherwise hard-exit at IMPORT TIME,
+    which previously broke fetch_lc_diags.py, fetch_impulse_diags.py,
+    fetch_todays_drive.py and reconcile_firestore.py too, not just this file.
+    """
     cached = _load_cached_token()
     if cached:
         return cached
-    r = requests.post(f"{_IDENTITY}/accounts:signUp?key={API_KEY}",
-                      json={"returnSecureToken": True}, timeout=30)
+    try:
+        r = requests.post(f"{_IDENTITY}/accounts:signUp?key={API_KEY}",
+                          json={"returnSecureToken": True}, timeout=30)
+    except requests.exceptions.RequestException as e:
+        print(f"WARNING: anonymous sign-in request failed ({e}); "
+              "falling back to unauthenticated requests.")
+        return None
     if r.status_code != 200:
-        print(f"ERROR: anonymous sign-in failed ({r.status_code}): {r.text[:200]}")
+        print(f"WARNING: anonymous sign-in failed ({r.status_code}): {r.text[:200]}")
         print("Is Anonymous sign-in enabled? Firebase console → Authentication "
-              "→ Sign-in method → Anonymous.")
-        sys.exit(1)
+              "→ Sign-in method → Anonymous. Falling back to unauthenticated "
+              "requests — this only works while firestore.rules still allows it.")
+        return None
     d = r.json()
     return _save_token(d["idToken"], d["refreshToken"],
                        int(d.get("expiresIn", 3600)))
@@ -108,7 +124,9 @@ def id_token():
 # token is attached in exactly one place. Import it instead of using `requests`
 # directly:  from fetch_firebase_analysis import SESSION
 SESSION = requests.Session()
-SESSION.headers.update({"Authorization": f"Bearer {id_token()}"})
+_token = id_token()
+if _token:
+    SESSION.headers.update({"Authorization": f"Bearer {_token}"})
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
